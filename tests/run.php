@@ -3399,6 +3399,68 @@ test('Der Test nennt den Servernamen, der auflöst', function (): void {
 });
 
 // ==================================================================
+test('Ein leerer Ordner ist kein Netzwerkfehler', function (): void {
+    // Was ihn diese Runde gekostet hat: Der Ordner fuer die neue
+    // Website war frisch angelegt und deshalb leer. Die Stufe las ihn
+    // ohne Muehe aus - null Eintraege - und meldete daraufhin:
+    //
+    //   Der Startordner liess sich nicht auflisten - meist eine
+    //   blockierte Datenverbindung.
+    //
+    // Er hat also eine Firewall gesucht, die es nicht gab. Dass die
+    // Schreibprobe zwei Stufen weiter unten durchlief, haette die
+    // Meldung sofort widerlegt: Ohne Datenverbindung kann man nicht
+    // schreiben.
+    $meldung = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'inhaltMeldung');
+    $meldung->setAccessible(true);
+
+    $leer = (string) $meldung->invoke(null, ['gelesen' => true, 'namen' => []], '/');
+    ok(str_contains($leer, 'leer'), 'Leer wird leer genannt');
+    ok(!str_contains($leer, 'Datenverbindung'),
+        'Und nicht der Datenverbindung angelastet');
+
+    $voll = (string) $meldung->invoke(null,
+        ['gelesen' => true, 'namen' => ['index.html', 'assets']], '/');
+    ok(str_contains($voll, '2 Eintraege'), 'Zwei Eintraege werden gezaehlt');
+
+    $tot = (string) $meldung->invoke(null, ['gelesen' => false, 'namen' => []], '/');
+    ok(str_contains($tot, 'Datenverbindung'),
+        'Ein echter Fehlschlag heisst weiterhin so');
+
+    // Und die Namensliste muss "." und ".." draussen lassen.
+    $namen = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'nurNamen');
+    $namen->setAccessible(true);
+
+    is(
+        ['index.html', 'assets'],
+        $namen->invoke(null, ['/heim/index.html', '.', '..', '/heim/assets', '/heim/assets']),
+        'Pfade werden zu Namen, Doppeltes und Punkte fliegen raus'
+    );
+});
+
+// ==================================================================
+test('Gruen gibt es erst, wenn jede Stufe gruen ist', function (): void {
+    // Der Verbindungstest faerbte seine Meldung nach "ok" - und "ok"
+    // beantwortet absichtlich nur, ob der Zielordner da ist. Eine
+    // gescheiterte Schreibprobe ergab damit eine gruene Erfolgs-
+    // meldung ueber einer Kette mit einem roten Kreuz darin.
+    $quelle = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Http/DeployController.php'
+    );
+
+    ok(!str_contains($quelle, "Session::flash(\$result['ok'] ? 'success' : 'error'"),
+        'Die Farbe haengt nicht mehr allein an "ok"');
+    ok(str_contains($quelle, "\$alleGruen ? 'success' : 'warning'"),
+        'Eine rote Stufe macht aus Gruen eine Warnung');
+
+    // Und die Vorgaben beim Speichern sind dieselben wie im Formular.
+    ok(str_contains($quelle, "\$request->input('protocol', 'ftp')"),
+        'Ein fehlendes Feld bringt nicht SFTP zurueck');
+    ok(str_contains($quelle, "'path' => \$request->input('path', '/')"),
+        'Und nicht /public_html');
+});
+
+// ==================================================================
 test('Die Zusammenfassung widerspricht der Stufenkette nicht', function (): void {
     // Der Fehler, der ihn eine Runde gekostet hat: $vorhanden wurde mit
     // dem Ergebnis der Schreibprobe ueberschrieben. Stand der Ordner

@@ -1636,22 +1636,16 @@ final class FtpDeployer
         $daHeim = (string) ($sftp->pwd() ?: '/');
         $stufen[] = self::stufe('Startordner', true, 'Nach der Anmeldung stehst du in ' . $daHeim . '.');
 
-        $obenAuf = [];
-
-        foreach ((array) ($sftp->nlist($daHeim) ?: []) as $eintrag) {
-            $name = basename((string) $eintrag);
-
-            if ($name !== '' && $name !== '.' && $name !== '..') {
-                $obenAuf[] = $name;
-            }
-        }
+        // Dieselbe Unterscheidung wie bei FTP: false heisst gescheitert,
+        // ein leeres Feld heisst leer.
+        $roh = $sftp->nlist($daHeim);
+        $inhalt = ['gelesen' => $roh !== false, 'namen' => self::nurNamen((array) ($roh ?: []))];
+        $obenAuf = $inhalt['namen'];
 
         $stufen[] = self::stufe(
             'Inhalt lesen',
-            $obenAuf !== [],
-            $obenAuf === []
-                ? 'Der Startordner liess sich nicht auflisten.'
-                : count($obenAuf) . ' Eintraege im Startordner.'
+            $inhalt['gelesen'],
+            self::inhaltMeldung($inhalt, $daHeim)
         );
 
         $ordner = self::verzeichnisseSftp($sftp, $pfad, $daHeim);
@@ -1769,17 +1763,20 @@ final class FtpDeployer
         $daHeim = (string) (@ftp_pwd($verbindung) ?: '/');
         $stufen[] = self::stufe('Startordner', true, 'Nach der Anmeldung stehst du in ' . $daHeim . '.');
 
-        $obenAuf = self::namenOben($verbindung, $daHeim);
+        $inhalt = self::inhaltOben($verbindung, $daHeim);
 
         // Meldet der Server im Passivmodus eine interne Adresse - auf
         // geteiltem Hosting hinter NAT die Regel -, laeuft die
         // Datenverbindung ins Leere und sieht aus wie eine Zeitueber-
         // schreitung. Dann noch einmal, mit der Adresse, die wir kennen.
-        if ($obenAuf === [] && defined('FTP_USEPASVADDRESS')) {
+        //
+        // Nur wenn das Lesen wirklich gescheitert ist. Ein leerer Ordner
+        // ist kein Fehler und braucht keinen zweiten Versuch.
+        if (!$inhalt['gelesen'] && defined('FTP_USEPASVADDRESS')) {
             @ftp_set_option($verbindung, FTP_USEPASVADDRESS, false);
-            $obenAuf = self::namenOben($verbindung, $daHeim);
+            $inhalt = self::inhaltOben($verbindung, $daHeim);
 
-            if ($obenAuf !== []) {
+            if ($inhalt['gelesen']) {
                 $stufen[] = self::stufe(
                     'Passivadresse',
                     true,
@@ -1789,12 +1786,12 @@ final class FtpDeployer
             }
         }
 
+        $obenAuf = $inhalt['namen'];
+
         $stufen[] = self::stufe(
             'Inhalt lesen',
-            $obenAuf !== [],
-            $obenAuf === []
-                ? 'Der Startordner liess sich nicht auflisten - meist eine blockierte Datenverbindung.'
-                : count($obenAuf) . ' Eintraege im Startordner: ' . implode(', ', array_slice($obenAuf, 0, 8))
+            $inhalt['gelesen'],
+            self::inhaltMeldung($inhalt, $daHeim)
         );
 
         $ordner = self::verzeichnisseFtp($verbindung, $pfad, $daHeim);
@@ -1890,15 +1887,68 @@ final class FtpDeployer
     }
 
     /**
-     * Die Namen im Startordner - Dateien wie Ordner.
+     * Was im Startordner liegt - und ob wir ueberhaupt nachsehen konnten.
      *
+     * Der Unterschied ist der ganze Punkt. Vorher stand hier eine
+     * Namensliste, und "leer" hiess damit dasselbe wie "gescheitert":
+     *
+     *     Inhalt lesen: Der Startordner liess sich nicht auflisten -
+     *     meist eine blockierte Datenverbindung.
+     *
+     * Genau das bekam ein frisch angelegter FTP-Zugang zu sehen, dessen
+     * Ordner fuer die neue Website noch leer war. Die Datenverbindung
+     * stand tadellos - die Schreibprobe zwei Stufen weiter unten lief ja
+     * durch -, aber die Meldung schickte ihn auf die Suche nach einer
+     * Firewall, die es nicht gab. Ein leerer Ordner ist der Normalfall,
+     * bevor die erste Website hochgeht.
+     *
+     * ftp_nlist gibt false zurueck, wenn die Datenverbindung scheitert,
+     * und ein leeres Feld, wenn der Ordner leer ist. Manche Server
+     * antworten auf einen leeren Ordner allerdings auch mit false -
+     * deshalb fragt ftp_rawlist noch einmal nach. Kommt von dort ein
+     * Feld, hat die Datenverbindung gestanden.
+     *
+     * @return array{gelesen:bool, namen:array<int, string>}
+     */
+    private static function inhaltOben($verbindung, string $heim): array
+    {
+        $roh = @ftp_nlist($verbindung, $heim);
+
+        if ($roh === false) {
+            $roh = @ftp_rawlist($verbindung, $heim);
+
+            // Aus einer rohen Zeile ("drwxr-xr-x 2 user group 4096 Sep 5
+            // 12:00 assets") wird nur der Name gebraucht.
+            if (is_array($roh)) {
+                $roh = array_map(
+                    static fn (string $zeile): string => (string) preg_replace(
+                        '/^(?:[\w-]{10}\s+\S+\s+\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+)/',
+                        '',
+                        $zeile
+                    ),
+                    array_filter($roh, static fn ($z): bool => is_string($z) && !str_starts_with($z, 'total '))
+                );
+            }
+        }
+
+        if ($roh === false) {
+            return ['gelesen' => false, 'namen' => []];
+        }
+
+        return ['gelesen' => true, 'namen' => self::nurNamen((array) $roh)];
+    }
+
+    /**
+     * Aus Pfaden Namen machen, ohne "." und "..".
+     *
+     * @param array<int, mixed> $eintraege
      * @return array<int, string>
      */
-    private static function namenOben($verbindung, string $heim): array
+    private static function nurNamen(array $eintraege): array
     {
         $namen = [];
 
-        foreach ((array) (@ftp_nlist($verbindung, $heim) ?: []) as $eintrag) {
+        foreach ($eintraege as $eintrag) {
             $name = basename((string) $eintrag);
 
             if ($name !== '' && $name !== '.' && $name !== '..') {
@@ -1907,6 +1957,28 @@ final class FtpDeployer
         }
 
         return array_values(array_unique($namen));
+    }
+
+    /**
+     * Drei Faelle, drei Saetze - und nur einer davon ist ein Fehler.
+     *
+     * @param array{gelesen:bool, namen:array<int, string>} $inhalt
+     */
+    private static function inhaltMeldung(array $inhalt, string $heim): string
+    {
+        if (!$inhalt['gelesen']) {
+            return 'Der Startordner liess sich nicht auflisten - meist eine blockierte '
+                . 'Datenverbindung. Steht eine Firewall dazwischen, hilft oft die '
+                . 'Verbindungsart „FTP mit Verschluesselung“ oder ein anderer Port.';
+        }
+
+        if ($inhalt['namen'] === []) {
+            return $heim . ' ist leer - lesen liess er sich aber. Bei einem frisch '
+                . 'angelegten Ordner ist das genau richtig.';
+        }
+
+        return count($inhalt['namen']) . ' Eintraege im Startordner: '
+            . implode(', ', array_slice($inhalt['namen'], 0, 8));
     }
 
     /**

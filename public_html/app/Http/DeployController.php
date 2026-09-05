@@ -107,7 +107,9 @@ final class DeployController
             return Response::notFound();
         }
 
-        $protocol = $request->input('protocol', 'sftp');
+        // Dieselben Vorgaben wie im Formular. Standen hier andere,
+        // brachte ein fehlendes Feld stillschweigend SFTP zurueck.
+        $protocol = $request->input('protocol', 'ftp');
         $port = $request->int('port', $protocol === 'sftp' ? 22 : 21);
 
         // Das Passwort wird verschlüsselt abgelegt. Geht das nicht,
@@ -127,7 +129,7 @@ final class DeployController
             'port' => $port,
             'username' => $request->input('username'),
             'password' => $request->input('password'),
-            'path' => $request->input('path', '/public_html'),
+            'path' => $request->input('path', '/'),
             'hosting_account_id' => $request->int('hosting_account_id'),
         ]);
 
@@ -164,7 +166,27 @@ final class DeployController
             return $this->back($project);
         }
 
-        Session::flash($result['ok'] ? 'success' : 'error', $result['message']);
+        // Gruen erst, wenn jede Stufe gruen ist.
+        //
+        // "ok" beantwortet nur die Frage, ob der Zielordner da ist -
+        // absichtlich, denn ein Zugang, der lesen aber nicht schreiben
+        // darf, taugt zum Stand-Holen. Als Farbe der Meldung genommen
+        // ergab das aber eine gruene Erfolgsmeldung ueber einer Kette
+        // mit einem roten Kreuz darin. Wer das sieht, glaubt der Farbe
+        // und sucht den Fehler spaeter woanders.
+        $alleGruen = true;
+
+        foreach ((array) ($result['stufen'] ?? []) as $stufe) {
+            if (!($stufe['ok'] ?? false)) {
+                $alleGruen = false;
+                break;
+            }
+        }
+
+        Session::flash(
+            $result['ok'] ? ($alleGruen ? 'success' : 'warning') : 'error',
+            $result['message']
+        );
 
         // Die gefundenen Verzeichnisse merken, damit die Seite sie
         // anbieten kann. Bei einer Subdomain ist das der Unterschied
