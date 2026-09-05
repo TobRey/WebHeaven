@@ -180,10 +180,37 @@ function seiten_verweise(string $html): array
 {
     preg_match_all('/href="(\/[^"#?]*)"/', $html, $treffer);
 
-    $liste = array_values(array_unique($treffer[1]));
+    $liste = array_values(array_unique(array_map(
+        'seiten_ohne_pruefwert',
+        $treffer[1]
+    )));
     sort($liste);
 
     return $liste;
+}
+
+/**
+ * Den Prüfwert aus einem Dateinamen nehmen.
+ *
+ * Der Build schreibt ihn hinein, damit Browser eine geänderte Datei
+ * neu laden – aus /assets/main.css wird /assets/main-DxirPQad.css.
+ * Er gehört zum Inhalt der Datei, nicht zum Aufbau der Seite, und
+ * hier stand er trotzdem in der Prüfsumme: Eine einzige geänderte
+ * CSS-Regel liess damit den Aufbau *aller* Seiten als verändert
+ * gelten. Ein Alarm, der bei jeder Kleinigkeit losgeht, ist nach
+ * dem dritten Mal keiner mehr.
+ *
+ * Der Name bleibt, nur der Prüfwert fällt weg: Verschwindet das
+ * Stilpaket ganz oder heisst es plötzlich anders, schlägt die
+ * Prüfung weiterhin an.
+ */
+function seiten_ohne_pruefwert(string $pfad): string
+{
+    if (!str_starts_with($pfad, '/assets/')) {
+        return $pfad;
+    }
+
+    return preg_replace('/-[A-Za-z0-9_-]{8,}\.(css|js)$/', '.$1', $pfad) ?? $pfad;
 }
 
 /** Aus einem Stück HTML den reinen Text machen. */

@@ -114,11 +114,15 @@ $anschluss = $anschluss ?? [];
     <h2 class="wa-panel__title">So geht es weiter</h2>
 
     <ol class="wa-steps">
-        <li>Text kopieren und in Claude Code einfügen.</li>
-        <li>Die fertigen Dateien herunterladen.</li>
+        <li>Text kopieren und einfügen.</li>
+        <li>
+            Am Ende kommt <strong>ein ZIP</strong> heraus &ndash; der Auftragstext
+            verlangt es so. Herunterladen, nicht auspacken.
+        </li>
         <li>
             Unter <a href="<?= e($base) ?>/projekt/<?= $id ?>/veroeffentlichen">Veröffentlichen</a>
-            hochladen &ndash; oder von Hand ins Webhosting kopieren.
+            bei &bdquo;Website hochladen&ldquo; auswählen. Das Archiv geht direkt
+            aufs Webhosting &ndash; ohne Umweg über einen Bau hier im Haus.
         </li>
     </ol>
 

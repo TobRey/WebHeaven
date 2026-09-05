@@ -751,6 +751,33 @@ TEXT;
             . "in dem Fall, welcher und warum, statt es stillschweigend\n"
             . "wegzulassen.";
 
+        // Zum Schluss die Abgabe.
+        //
+        // Sie steht hier, weil das Ergebnis danach hochgeladen wird und
+        // nicht abgetippt: Im Backend gibt es unter „Veröffentlichen"
+        // ein Feld, das genau dieses Archiv entgegennimmt und aufs FTP
+        // schiebt. Ohne die Ansage kommt mal ein Ordner, mal eine Liste
+        // von Dateien, mal ein Archiv mit drei Ebenen darüber - und
+        // jedes davon kostet Handarbeit.
+        $zeilen[] = "**Die Abgabe: ein ZIP.**\n\n"
+            . "Pack am Ende alles in eine einzige ZIP-Datei und gib sie mir zum\n"
+            . "Herunterladen. Das ist die Form, in der die Website weiterverarbeitet\n"
+            . "wird – sie wird als Archiv hochgeladen und von dort direkt auf das\n"
+            . "Webhosting geschrieben.\n\n"
+            . "Dafür gilt:\n\n"
+            . "- `index.html` liegt **auf der obersten Ebene** des Archivs, nicht in\n"
+            . "  einem Unterordner. (Ein einzelner umschliessender Ordner wird beim\n"
+            . "  Hochladen weggeschnitten – aber verlass dich nicht darauf.)\n"
+            . "- Alle Pfade im Archiv sind **relativ**. Kein `/` am Anfang, kein `..`,\n"
+            . "  keine Laufwerksbuchstaben.\n"
+            . "- Keine Entwicklungsreste: kein `node_modules`, kein `.git`, keine\n"
+            . "  `.DS_Store`, keine Quelldateien, aus denen erst noch etwas gebaut\n"
+            . "  werden müsste. Was im Archiv liegt, läuft so, wie es liegt.\n"
+            . "- Verweise untereinander sind relativ, damit die Website in jedem\n"
+            . "  Verzeichnis funktioniert – auch in einem Unterordner.\n\n"
+            . "Sag mir am Ende in einem Satz, wie viele Dateien darin sind und wie\n"
+            . "gross das Archiv ist.";
+
         return implode("\n\n", $zeilen);
     }
 

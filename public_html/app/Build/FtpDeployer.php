@@ -287,6 +287,411 @@ final class FtpDeployer
     }
 
     // ------------------------------------------------------------------
+    // Ein fertiges Archiv hochladen
+    // ------------------------------------------------------------------
+
+    /**
+     * Ein ZIP direkt auf den Server des Kunden schieben.
+     *
+     * Für den Weg ohne den eingebauten Generator: Auftragstext
+     * kopieren, die Website anderswo bauen lassen, das Ergebnis als
+     * ZIP hier hochladen. Von hier an ist es dasselbe wie ein selbst
+     * gebautes Paket.
+     *
+     * **Das Archiv wird bei uns nie ausgepackt.** Jeder Eintrag geht
+     * als Datenstrom direkt aus dem ZIP auf das FTP. Das ist kein
+     * Umweg, sondern der Punkt: Eine Kundenwebsite enthält PHP – ihr
+     * Backend, das Kontaktformular, die Brücke –, und ausgepackte
+     * fremde PHP-Dateien auf dem eigenen Webserver sind eine
+     * Hintertür, ganz gleich wie gut der Ordner gesperrt ist. So
+     * berührt der Inhalt unsere Festplatte nur als Archiv, das
+     * niemand ausführt.
+     *
+     * @param callable|null $onProgress fn(int $erledigt, int $gesamt, string $datei)
+     * @return array{ok:bool, files:int, error:string, retryable:bool, verified:bool, url:string}
+     */
+    public static function deployZip(
+        array $project,
+        string $zipPfad,
+        ?callable $onProgress = null,
+        float $budget = 120.0
+    ): array {
+        if (!class_exists(\ZipArchive::class)) {
+            return self::error('Dieser Server kann keine ZIP-Dateien lesen.', false);
+        }
+
+        $target = self::targetFor((int) $project['id']);
+
+        if ($target === null) {
+            return self::error('Für dieses Projekt sind keine Zugangsdaten hinterlegt.', false);
+        }
+
+        $zip = new \ZipArchive();
+
+        if ($zip->open($zipPfad) !== true) {
+            return self::error('Das ist keine lesbare ZIP-Datei.', false);
+        }
+
+        $plan = self::archivPlan($zip);
+
+        if ($plan['error'] !== '') {
+            $zip->close();
+
+            return self::error($plan['error'], false);
+        }
+
+        if ($plan['dateien'] === []) {
+            $zip->close();
+
+            return self::error('In diesem Archiv ist keine einzige Datei.', false);
+        }
+
+        $password = Crypto::decrypt((string) ($target['secret'] ?? ''));
+
+        if ($password === null) {
+            $zip->close();
+
+            return self::error('Die gespeicherten Zugangsdaten lassen sich nicht entschlüsseln.', false);
+        }
+
+        try {
+            $result = (string) $target['protocol'] === 'sftp'
+                ? self::zipViaSftp($target, $password, $zip, $plan, $onProgress, $budget)
+                : self::zipViaFtp($target, $password, $zip, $plan, $onProgress, $budget,
+                    (string) $target['protocol'] === 'ftps');
+        } finally {
+            Crypto::wipe($password);
+            $zip->close();
+        }
+
+        Db::update('deploy_targets', [
+            'last_result' => mb_substr($result['ok']
+                ? sprintf('%d Dateien aus dem Archiv hochgeladen.', $result['files'])
+                : $result['error'], 0, 500),
+            'last_deployed_at' => $result['ok'] ? Db::now() : null,
+            'updated_at' => Db::now(),
+        ], 'project_id = :p', ['p' => (int) $project['id']]);
+
+        return $result;
+    }
+
+    /**
+     * Was im Archiv steht und wohin es gehört.
+     *
+     * Zwei Dinge werden dabei entschieden, und beide sind wichtig:
+     *
+     * Erstens fliegt jeder Eintrag raus, der aus dem Zielordner
+     * ausbrechen könnte – absolute Pfade, „..“, Laufwerksbuchstaben,
+     * Nullbytes. Ein ZIP ist eine Liste von Namen, und diese Namen
+     * kommen von aussen.
+     *
+     * Zweitens: Liegt alles in einem einzigen Ordner – und genau so
+     * packen die meisten –, wird der weggeschnitten. Sonst landete die
+     * Website unter `/public_html/meine-website/` statt in
+     * `/public_html`, und niemand fände sie.
+     *
+     * @return array{dateien:array<int, array{index:int, ziel:string, bytes:int}>, error:string, stamm:string}
+     */
+    private static function archivPlan(\ZipArchive $zip): array
+    {
+        $roh = [];
+
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $stat = $zip->statIndex($i);
+
+            if ($stat === false) {
+                continue;
+            }
+
+            $name = str_replace('\\', '/', (string) $stat['name']);
+
+            if ($name === '' || str_ends_with($name, '/')) {
+                continue;
+            }
+
+            // Was Mac und Windows beilegen und was auf keinem Server
+            // etwas zu suchen hat.
+            //
+            // Geprueft wird je Pfadabschnitt und nicht am Anfang des
+            // ganzen Namens: Packt jemand seinen Website-Ordner ein,
+            // heisst der Eintrag "meine-website/__MACOSX/._x" - und
+            // eine Pruefung auf den Anfang laesst ihn durch. Genau das
+            // ist passiert.
+            if (self::archivMuell($name)) {
+                continue;
+            }
+
+            $grund = self::archivEintragPruefen($name);
+
+            if ($grund !== '') {
+                return ['dateien' => [], 'error' => $grund, 'stamm' => ''];
+            }
+
+            $roh[] = ['index' => $i, 'name' => $name, 'bytes' => (int) $stat['size']];
+        }
+
+        if ($roh === []) {
+            return ['dateien' => [], 'error' => '', 'stamm' => ''];
+        }
+
+        $stamm = self::gemeinsamerStamm(array_column($roh, 'name'));
+        $dateien = [];
+
+        foreach ($roh as $eintrag) {
+            $ziel = $stamm === '' ? $eintrag['name'] : substr($eintrag['name'], strlen($stamm) + 1);
+
+            if ($ziel === '' || $ziel === false) {
+                continue;
+            }
+
+            $dateien[] = ['index' => $eintrag['index'], 'ziel' => $ziel, 'bytes' => $eintrag['bytes']];
+        }
+
+        return ['dateien' => $dateien, 'error' => '', 'stamm' => $stamm];
+    }
+
+    /**
+     * Beipack, der auf keinem Webserver etwas zu suchen hat.
+     *
+     * macOS legt `__MACOSX` und `._name` an, Windows `Thumbs.db`, die
+     * Editoren ihre eigenen Ordner. Nichts davon tut etwas, alles davon
+     * liegt danach sichtbar auf der Kundenwebsite.
+     */
+    private static function archivMuell(string $name): bool
+    {
+        foreach (explode('/', $name) as $teil) {
+            if ($teil === '__MACOSX'
+                || $teil === '.DS_Store'
+                || $teil === 'Thumbs.db'
+                || $teil === '.git'
+                || $teil === 'node_modules'
+                || str_starts_with($teil, '._')
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Warum ein Eintrag nicht durchkommt – oder ein leerer Text. */
+    private static function archivEintragPruefen(string $name): string
+    {
+        if (str_starts_with($name, '/') || preg_match('#^[A-Za-z]:#', $name) === 1) {
+            return 'Das Archiv enthält einen absoluten Pfad (' . $name . '). '
+                . 'So etwas gehört nicht in ein Website-Archiv.';
+        }
+
+        foreach (explode('/', $name) as $teil) {
+            if ($teil === '..') {
+                return 'Das Archiv enthält einen Pfad, der aus dem Zielordner '
+                    . 'ausbricht (' . $name . ').';
+            }
+        }
+
+        if (str_contains($name, "\0")) {
+            return 'Das Archiv enthält einen Pfad mit einem Nullbyte.';
+        }
+
+        return '';
+    }
+
+    /**
+     * Der eine Ordner, in dem alles liegt – oder nichts.
+     *
+     * @param array<int, string> $namen
+     */
+    private static function gemeinsamerStamm(array $namen): string
+    {
+        $erster = explode('/', $namen[0]);
+
+        if (count($erster) < 2) {
+            return '';
+        }
+
+        $stamm = $erster[0];
+
+        foreach ($namen as $name) {
+            if (!str_starts_with($name, $stamm . '/')) {
+                return '';
+            }
+        }
+
+        return $stamm;
+    }
+
+    /**
+     * @param array{dateien:array<int, array{index:int, ziel:string, bytes:int}>} $plan
+     * @return array{ok:bool, files:int, error:string, retryable:bool, verified:bool, url:string}
+     */
+    private static function zipViaFtp(
+        array $target,
+        string $password,
+        \ZipArchive $zip,
+        array $plan,
+        ?callable $onProgress,
+        float $budget,
+        bool $secure
+    ): array {
+        if (!function_exists('ftp_connect')) {
+            return self::error('Dieser Server kann kein FTP.', false);
+        }
+
+        if ($secure && !function_exists('ftp_ssl_connect')) {
+            return self::error('Dieses PHP kann kein verschlüsseltes FTP (es fehlt OpenSSL).', false);
+        }
+
+        $sauber = self::normalizeHost((string) $target['host'], (int) $target['port'] ?: 21);
+
+        $verbindung = $secure
+            ? @ftp_ssl_connect($sauber['host'], $sauber['port'], 20)
+            : @ftp_connect($sauber['host'], $sauber['port'], 20);
+
+        if ($verbindung === false) {
+            return self::error('Keine Verbindung zu ' . $sauber['host'] . '.', true);
+        }
+
+        if (!@ftp_login($verbindung, (string) $target['username'], $password)) {
+            @ftp_close($verbindung);
+
+            return self::error('Anmeldung abgelehnt. Bitte Benutzername und Passwort prüfen.', false);
+        }
+
+        @ftp_pasv($verbindung, true);
+
+        if (defined('FTP_USEPASVADDRESS') && @ftp_nlist($verbindung, '.') === false) {
+            @ftp_set_option($verbindung, FTP_USEPASVADDRESS, false);
+        }
+
+        $wurzel = self::cleanPath((string) $target['remote_path']);
+        $angelegt = [];
+        $begonnen = microtime(true);
+        $fertig = 0;
+        $gesamt = count($plan['dateien']);
+
+        foreach ($plan['dateien'] as $datei) {
+            if (microtime(true) - $begonnen > $budget) {
+                @ftp_close($verbindung);
+
+                return self::error(sprintf(
+                    'Zeit abgelaufen nach %d von %d Dateien. Der Auftrag wird fortgesetzt.',
+                    $fertig,
+                    $gesamt
+                ), true);
+            }
+
+            $fern = $wurzel . '/' . $datei['ziel'];
+            $ordner = dirname($fern);
+
+            if (!isset($angelegt[$ordner])) {
+                self::ensureRemoteDir($verbindung, $ordner);
+                $angelegt[$ordner] = true;
+            }
+
+            // Direkt aus dem Archiv in die Leitung - ohne Umweg über
+            // die eigene Festplatte.
+            $strom = $zip->getStreamIndex($datei['index']);
+
+            if ($strom === false) {
+                @ftp_close($verbindung);
+
+                return self::error('Die Datei ' . $datei['ziel'] . ' liess sich nicht lesen.', false);
+            }
+
+            $ok = @ftp_fput($verbindung, $fern, $strom, FTP_BINARY);
+
+            fclose($strom);
+
+            if (!$ok) {
+                @ftp_close($verbindung);
+
+                return self::error(
+                    'Die Datei ' . $datei['ziel'] . ' liess sich nicht schreiben. '
+                    . 'Stimmt das Zielverzeichnis, und ist genug Platz frei?',
+                    true
+                );
+            }
+
+            $fertig++;
+
+            if ($onProgress !== null) {
+                $onProgress($fertig, $gesamt, $datei['ziel']);
+            }
+        }
+
+        @ftp_close($verbindung);
+
+        return ['ok' => true, 'files' => $fertig, 'error' => '',
+                'retryable' => false, 'verified' => false, 'url' => ''];
+    }
+
+    /** @return array{ok:bool, files:int, error:string, retryable:bool, verified:bool, url:string} */
+    private static function zipViaSftp(
+        array $target,
+        string $password,
+        \ZipArchive $zip,
+        array $plan,
+        ?callable $onProgress,
+        float $budget
+    ): array {
+        if (!class_exists(SFTP::class)) {
+            return self::error('Die Bibliothek für SFTP fehlt im Paket.', false);
+        }
+
+        $sauber = self::normalizeHost((string) $target['host'], (int) $target['port'] ?: 22);
+        $sftp = new SFTP($sauber['host'], $sauber['port'], 20);
+
+        if (!$sftp->login((string) $target['username'], $password)) {
+            return self::error('Anmeldung abgelehnt. Bitte Benutzername und Passwort prüfen.', false);
+        }
+
+        $wurzel = self::cleanPath((string) $target['remote_path']);
+        $angelegt = [];
+        $begonnen = microtime(true);
+        $fertig = 0;
+        $gesamt = count($plan['dateien']);
+
+        foreach ($plan['dateien'] as $datei) {
+            if (microtime(true) - $begonnen > $budget) {
+                $sftp->disconnect();
+
+                return self::error(sprintf(
+                    'Zeit abgelaufen nach %d von %d Dateien. Der Auftrag wird fortgesetzt.',
+                    $fertig,
+                    $gesamt
+                ), true);
+            }
+
+            $fern = $wurzel . '/' . $datei['ziel'];
+            $ordner = dirname($fern);
+
+            if (!isset($angelegt[$ordner])) {
+                $sftp->mkdir($ordner, -1, true);
+                $angelegt[$ordner] = true;
+            }
+
+            $inhalt = $zip->getFromIndex($datei['index']);
+
+            if ($inhalt === false || !$sftp->put($fern, $inhalt)) {
+                $sftp->disconnect();
+
+                return self::error('Die Datei ' . $datei['ziel'] . ' liess sich nicht schreiben.', true);
+            }
+
+            $fertig++;
+
+            if ($onProgress !== null) {
+                $onProgress($fertig, $gesamt, $datei['ziel']);
+            }
+        }
+
+        $sftp->disconnect();
+
+        return ['ok' => true, 'files' => $fertig, 'error' => '',
+                'retryable' => false, 'verified' => false, 'url' => ''];
+    }
+
+    // ------------------------------------------------------------------
     // Herunterladen (für die Sicherung)
     // ------------------------------------------------------------------
 
@@ -1034,7 +1439,17 @@ final class FtpDeployer
 
             Crypto::wipe($password);
 
-            return self::pruefErgebnis(false, self::namensHilfe($host), [], '', $stufen);
+            return self::pruefErgebnis(
+                false,
+                self::namensHilfe($host),
+                [],
+                '',
+                $stufen,
+                // Zum Anklicken statt zum Abtippen: Der Name, der
+                // auflöst, ist die halbe Antwort - er soll nicht noch
+                // einmal von Hand richtig getroffen werden müssen.
+                self::namensAlternative($host)
+            );
         }
 
         $stufen[] = self::stufe('Servername', true, $host . ' loest auf.');
@@ -1075,22 +1490,53 @@ final class FtpDeployer
      * geschrieben, weil es bei manchen Anbietern so heisst. Bei cPanel -
      * und damit bei GoDaddy - gibt es diesen Eintrag nicht.
      */
+    /**
+     * Der andere Name - der, der auflöst.
+     *
+     * GoDaddy zeigt in cPanel `ftp.deine-domain.ch` an. Das ist keine
+     * Erfindung, das steht dort wirklich; nur führt die DNS-Zone den
+     * Eintrag nicht immer, und dann gibt es den Server schlicht nicht.
+     * Umgekehrt kommt genauso vor: Bei manchen Anbietern gibt es den
+     * `ftp`-Eintrag, und die blosse Domain zeigt woandershin.
+     *
+     * Deshalb wird beides probiert und der genannt, der antwortet -
+     * statt einer Regel, die bei jedem zweiten Anbieter falsch ist.
+     */
+    private static function namensAlternative(string $host): string
+    {
+        $andere = str_starts_with($host, 'ftp.')
+            ? substr($host, 4)
+            : 'ftp.' . $host;
+
+        // Bei einer nackten Domain wie "beispiel" gibt es nichts
+        // abzuschneiden, und "ftp.beispiel" waere geraten.
+        if ($andere === '' || !str_contains($andere, '.')) {
+            return '';
+        }
+
+        return self::loestAuf($andere) ? $andere : '';
+    }
+
     private static function namensHilfe(string $host): string
     {
         $meldung = 'Diesen Servernamen gibt es nicht: ' . $host
             . '. Es wurde also nie ein Server abgewiesen - es wurde keiner gefunden.';
 
+        $andere = self::namensAlternative($host);
+
+        if ($andere !== '') {
+            return $meldung . ' Aber ' . $andere . ' loest auf - trage den ein.'
+                . (str_starts_with($host, 'ftp.')
+                    ? ' GoDaddy zeigt zwar „ftp.“ davor an; den Eintrag gibt es'
+                        . ' in der DNS-Zone aber nicht immer, und dann geht nur die'
+                        . ' Domain selbst.'
+                    : '');
+        }
+
         if (str_starts_with($host, 'ftp.')) {
-            $ohne = substr($host, 4);
-
-            if (self::loestAuf($ohne)) {
-                return $meldung . ' Nimm ' . $ohne . ' ohne das „ftp.“ davor:'
-                    . ' bei cPanel (und damit bei GoDaddy) gibt es keinen ftp-Eintrag.';
-            }
-
-            return $meldung . ' Bei cPanel gibt es kein „ftp.“ vor der Domain.'
-                . ' Nimm die Domain selbst oder den Servernamen, der in cPanel'
-                . ' rechts unter „Allgemeine Informationen“ steht.';
+            return $meldung . ' Auch ' . substr($host, 4) . ' antwortet nicht.'
+                . ' In cPanel steht der Servername rechts unter „Allgemeine'
+                . ' Informationen“ - der geht immer, auch wenn er lang aussieht.';
         }
 
         return $meldung . ' Tippfehler? Sonst hilft der Servername aus cPanel'
@@ -1677,7 +2123,8 @@ final class FtpDeployer
         string $message,
         array $ordner = [],
         string $vorschlag = '',
-        array $stufen = []
+        array $stufen = [],
+        string $vorschlagHost = ''
     ): array {
         // Der Vorschlag gehört in die Liste zum Anklicken - sonst steht
         // in der Meldung "trage / ein" und daneben lauter Ordner, unter
@@ -1693,6 +2140,7 @@ final class FtpDeployer
             'stufen' => $stufen,
             'ordner' => $ordner,
             'vorschlag' => $vorschlag,
+            'vorschlagHost' => $vorschlagHost,
         ];
     }
 

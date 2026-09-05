@@ -3163,6 +3163,244 @@ test('Der Test sagt, an welcher Stufe es haengt', function (): void {
 });
 
 // ==================================================================
+test('Ein hochgeladenes Archiv wird geprueft, bevor es hinausgeht', function (): void {
+    // Der Weg ohne den eingebauten Generator: Auftragstext kopieren,
+    // die Website anderswo bauen lassen, das Ergebnis als ZIP
+    // hochladen. Die Namen in einem Archiv kommen damit von aussen -
+    // und ein Archiv ist nichts als eine Liste von Namen.
+    if (!class_exists(ZipArchive::class)) {
+        ok(true, 'Ohne ZIP-Erweiterung nicht pruefbar');
+
+        return;
+    }
+
+    $plan = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'archivPlan');
+    $plan->setAccessible(true);
+
+    $bauen = static function (array $eintraege): ZipArchive {
+        $pfad = sys_get_temp_dir() . '/wa-archiv-' . bin2hex(random_bytes(6)) . '.zip';
+        $zip = new ZipArchive();
+        $zip->open($pfad, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+
+        foreach ($eintraege as $name => $inhalt) {
+            $zip->addFromString((string) $name, (string) $inhalt);
+        }
+
+        $zip->close();
+        $zip->open($pfad);
+
+        return $zip;
+    };
+
+    // --- Was abgewiesen wird ----------------------------------------
+    foreach ([
+        'Pfadausbruch' => ['index.html' => 'x', '../../etc/passwd' => 'x'],
+        'Ausbruch mitten drin' => ['index.html' => 'x', 'a/../../b' => 'x'],
+        'Absoluter Pfad' => ['index.html' => 'x', '/etc/passwd' => 'x'],
+        'Laufwerksbuchstabe' => ['index.html' => 'x', 'C:/windows/x' => 'x'],
+    ] as $was => $eintraege) {
+        $ergebnis = $plan->invoke(null, $bauen($eintraege));
+
+        ok(($ergebnis['error'] ?? '') !== '', $was . ': wird abgewiesen');
+        is([], $ergebnis['dateien'], $was . ': und nichts geht hinaus');
+    }
+
+    // --- Der umschliessende Ordner faellt weg ------------------------
+    // So packen die meisten: alles in einem Ordner. Ohne das Wegschneiden
+    // laege die Website unter /public_html/meine-website/ und niemand
+    // faende sie.
+    $ergebnis = $plan->invoke(null, $bauen([
+        'meine-website/index.html' => 'x',
+        'meine-website/assets/site.css' => 'x',
+        'meine-website/unterseite/kontakt.html' => 'x',
+    ]));
+
+    $ziele = array_column($ergebnis['dateien'], 'ziel');
+    sort($ziele);
+
+    is(['assets/site.css', 'index.html', 'unterseite/kontakt.html'], $ziele,
+        'Der eine umschliessende Ordner wird weggeschnitten');
+
+    // Liegen die Dateien schon oben, bleibt alles, wie es ist.
+    $ergebnis = $plan->invoke(null, $bauen([
+        'index.html' => 'x',
+        'assets/site.css' => 'x',
+    ]));
+
+    $ziele = array_column($ergebnis['dateien'], 'ziel');
+    sort($ziele);
+
+    is(['assets/site.css', 'index.html'], $ziele, 'Ohne Ordner bleibt es, wie es ist');
+
+    // Zwei Ordner nebeneinander: dann ist keiner der umschliessende.
+    $ergebnis = $plan->invoke(null, $bauen([
+        'de/index.html' => 'x',
+        'en/index.html' => 'x',
+    ]));
+
+    $ziele = array_column($ergebnis['dateien'], 'ziel');
+    sort($ziele);
+
+    is(['de/index.html', 'en/index.html'], $ziele, 'Zwei Ordner bleiben beide stehen');
+
+    // --- Beipack fliegt raus -----------------------------------------
+    // Und zwar auch, wenn er nicht ganz vorn steht: Packt jemand seinen
+    // Website-Ordner ein, heisst der Eintrag
+    // "meine-website/__MACOSX/._x" - eine Pruefung auf den Anfang des
+    // Namens laesst ihn durch. Genau das ist passiert.
+    $ergebnis = $plan->invoke(null, $bauen([
+        'seite/index.html' => 'x',
+        'seite/__MACOSX/._index.html' => 'x',
+        'seite/.DS_Store' => 'x',
+        'seite/node_modules/foo/bar.js' => 'x',
+        'seite/.git/config' => 'x',
+    ]));
+
+    is(['index.html'], array_column($ergebnis['dateien'], 'ziel'),
+        'Beipack fliegt raus, auch tief im Archiv');
+
+    // --- PHP darf bleiben --------------------------------------------
+    // Anders als beim Editor-Plugin: Dieses Archiv geht auf den Server
+    // des Kunden und wird bei uns nie ausgepackt. Eine Kundenwebsite
+    // besteht zu einem guten Teil aus PHP - ihr Backend, das
+    // Kontaktformular, die Bruecke.
+    $ergebnis = $plan->invoke(null, $bauen([
+        'index.html' => 'x',
+        'kontakt.php' => 'x',
+        'admin/index.php' => 'x',
+    ]));
+
+    is(3, count($ergebnis['dateien']), 'PHP gehoert zu einer Kundenwebsite dazu');
+
+    // Und genau deshalb darf es bei uns nie landen: Der Weg aufs FTP
+    // liest aus dem Archiv und schreibt in die Leitung.
+    $quelle = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
+    );
+
+    ok(str_contains($quelle, 'getStreamIndex'),
+        'Das Archiv wird gestreamt, nicht bei uns ausgepackt');
+    ok(!str_contains($quelle, '$zip->extractTo'),
+        'Ausgepackt wird hier nichts');
+});
+
+// ==================================================================
+test('Die beiden Knoepfe stehen da, auch ohne Zugangsdaten', function (): void {
+    // Der Fehler, den der Browserdurchgang gefunden hat: Die ganze
+    // Tafel hing an "es gibt ein Ziel". Ohne hinterlegten Zugang war
+    // sie schlicht nicht da - und ein Knopf, der fehlt, erklaert
+    // nichts. Man sucht ihn dann an der Stelle, an der er nie stand.
+    // Jetzt steht er da und sagt selbst, was ihm fehlt.
+    $mit = \WebAtze\Core\View::partial('admin/deploy', [
+        'project' => ['id' => 7, 'name' => 'Probe', 'status' => 'draft', 'brief' => '{}'],
+        'target' => [
+            'id' => 1, 'host' => 'example.com', 'username' => 'web@example.com',
+            'protocol' => 'ftps', 'port' => 21, 'remote_path' => '/public_html',
+        ],
+        'builds' => [], 'job' => null, 'brief' => [],
+        'providers' => require dirname(__DIR__) . '/public_html/app/Support/providers.php',
+        'gefunden' => [], 'hostingAccounts' => [],
+    ]);
+
+    $ohne = \WebAtze\Core\View::partial('admin/deploy', [
+        'project' => ['id' => 7, 'name' => 'Probe', 'status' => 'draft', 'brief' => '{}'],
+        'target' => null,
+        'builds' => [], 'job' => null, 'brief' => [],
+        'providers' => require dirname(__DIR__) . '/public_html/app/Support/providers.php',
+        'gefunden' => [], 'hostingAccounts' => [],
+    ]);
+
+    foreach (['mit Zugang' => $mit, 'ohne Zugang' => $ohne] as $fall => $html) {
+        ok(str_contains($html, '/projekt/7/archiv'),
+            'Website hochladen ist da (' . $fall . ')');
+        ok(str_contains($html, '/projekt/7/stand-holen'),
+            'Aktuellen Stand holen ist da (' . $fall . ')');
+    }
+
+    // Ohne Zugang sind sie stumpf - und sagen, wohin man muss.
+    ok(str_contains($ohne, 'disabled'), 'Ohne Zugang sind sie nicht scharf');
+    ok(str_contains($ohne, 'href="#zugang"'), 'Und der Weg dorthin steht daneben');
+    ok(str_contains($mit, 'id="zugang"'), 'Das Ziel des Verweises gibt es auch');
+
+    // Mit Zugang keine stumpfen Knoepfe in dieser Tafel. Geschnitten
+    // wird an der Ueberschrift der naechsten, nicht am Wort "Paket" -
+    // das steht auch im Hinweistext darueber, und der Schnitt laege
+    // dann vor den Knoepfen, um die es geht.
+    $tafel = substr($mit, 0, (int) strpos($mit, '<h2 class="wa-panel__title">Paket<'));
+    ok(str_contains($tafel, '/projekt/7/archiv'), 'Der Schnitt liegt hinter den Knoepfen');
+    ok(!str_contains($tafel, 'disabled'), 'Mit Zugang sind beide scharf');
+});
+
+// ==================================================================
+test('Der Auftragstext verlangt am Ende ein ZIP', function (): void {
+    // Ohne die Ansage kommt mal ein Ordner, mal eine Liste von Dateien,
+    // mal ein Archiv mit drei Ebenen darueber - und jedes davon kostet
+    // Handarbeit, bevor es hochgeladen werden kann.
+    $text = \WebAtze\Domain\PromptText::build([
+        'company' => 'Muster AG',
+        'industry' => 'Handwerk',
+    ]);
+
+    ok(str_contains($text, 'ZIP'), 'Das Wort ZIP kommt vor');
+    ok(str_contains($text, 'index.html'), 'Und wo die Startseite liegen soll');
+    ok(str_contains($text, 'obersten Ebene'), 'Naemlich ganz oben');
+    ok(str_contains($text, 'node_modules'), 'Ohne Entwicklungsreste');
+
+    // Und die Zusage, die ueberall gilt: Es steht nirgends, wie die
+    // Website entstanden ist.
+    foreach (['Claude', 'Anthropic', 'KI-generiert'] as $verraeter) {
+        ok(!str_contains($text, $verraeter . ' hat'), 'Kein Hinweis auf ' . $verraeter);
+    }
+});
+
+// ==================================================================
+test('Der Test nennt den Servernamen, der auflöst', function (): void {
+    // GoDaddy zeigt "ftp.deine-domain.ch" an - das ist keine Erfindung,
+    // das steht dort wirklich. Nur fuehrt die DNS-Zone den Eintrag
+    // nicht immer, und dann gibt es den Server schlicht nicht.
+    // Umgekehrt kommt genauso vor. Deshalb wird beides probiert.
+    $alternative = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'namensAlternative');
+    $alternative->setAccessible(true);
+
+    // Eine Domain, die es sicher gibt, mit einem ftp-Namen, den es
+    // sicher nicht gibt: genau sein Fall.
+    is('example.com', $alternative->invoke(null, 'ftp.example.com'),
+        'Zu ftp.X wird X vorgeschlagen, wenn X auflöst');
+
+    // Und was nirgends hinführt, wird nicht erfunden.
+    is('', $alternative->invoke(null, 'ftp.gibtsganzsicherzznicht.invalid'),
+        'Ohne auflösende Alternative wird nichts vorgeschlagen');
+    is('', $alternative->invoke(null, 'nurein wort'),
+        'Aus einem Namen ohne Punkt wird nichts geraten');
+
+    // Die Meldung nennt ihn dann auch.
+    $hilfe = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'namensHilfe');
+    $hilfe->setAccessible(true);
+
+    $text = (string) $hilfe->invoke(null, 'ftp.example.com');
+
+    ok(str_contains($text, 'example.com loest auf'), 'Die Meldung nennt den Namen, der geht');
+    ok(str_contains($text, 'DNS-Zone'), 'Und erklärt, warum GoDaddys Angabe hier nicht passt');
+
+    // Und die Antwort traegt ihn zum Anklicken mit.
+    $ergebnis = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'pruefErgebnis');
+    $ergebnis->setAccessible(true);
+
+    $antwort = $ergebnis->invoke(null, false, 'x', [], '', [], 'example.com');
+
+    is('example.com', (string) ($antwort['vorschlagHost'] ?? ''),
+        'Der Servervorschlag steht in der Antwort');
+
+    // Die Ansicht muss ihn ins Serverfeld eintragen, nicht ins Verzeichnis.
+    $view = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Views/admin/deploy.php'
+    );
+
+    ok(str_contains($view, 'data-fill="#host"'),
+        'Der Knopf fuellt das Serverfeld');
+});
+
+// ==================================================================
 test('Die Zusammenfassung widerspricht der Stufenkette nicht', function (): void {
     // Der Fehler, der ihn eine Runde gekostet hat: $vorhanden wurde mit
     // dem Ergebnis der Schreibprobe ueberschrieben. Stand der Ordner
@@ -3290,8 +3528,18 @@ test('Der Hinweis im Formular widerspricht cPanel nicht mehr', function (): void
 
     $text = implode(' ', $godaddy['steps']) . ' ' . $godaddy['note'];
 
-    ok(str_contains($text, 'nicht</strong> <code>ftp.'),
-        'Bei GoDaddy steht, dass kein ftp. davor gehoert');
+    // Hier stand vorher, cPanel lege den Namen "nie" an. GoDaddy zeigt
+    // ihn aber sehr wohl an - nur fuehrt die DNS-Zone den Eintrag nicht
+    // immer. Ein Werkzeug, das dem Anbieter widerspricht, hat zu
+    // erklaeren warum, nicht zu behaupten, der Anbieter irre sich.
+    ok(!str_contains($text, 'Diesen Namen gibt es bei cPanel nicht'),
+        'Kein Absolutum mehr ueber den ftp-Namen');
+    ok(str_contains($text, 'DNS-Zone'),
+        'Sondern die Bedingung: es braucht den DNS-Eintrag');
+    ok(str_contains($text, 'explicit FTPS'),
+        'Und GoDaddys eigener Hinweis auf verschluesseltes FTP steht drin');
+    is('ftps', (string) $godaddy['protocol'],
+        'Verschluesselt ist die Vorgabe - derselbe Port, kein Klartextpasswort');
     ok(str_contains($text, 'festgenagelt'),
         'Und dass ein Unterkonto in seinem Ordner sitzt');
 });
@@ -6543,6 +6791,47 @@ test('Die eigene Website: der Aufbau ist noch derselbe', function (): void {
             $schluessel . ': derselbe Aufbau'
         );
     }
+});
+
+// ==================================================================
+test('Der Aufbau haengt nicht am Pruefwert der Dateinamen', function (): void {
+    // Ein geaenderter Buchstabe in einer CSS-Regel liess den Aufbau
+    // *aller* Seiten als veraendert gelten: Der Build schreibt einen
+    // Pruefwert in den Dateinamen, und der stand in der Prueflinie
+    // fuer den Seitenaufbau. Ein Alarm, der bei jedem Bau losgeht,
+    // ist nach dem dritten Mal keiner mehr - dann drueckt man ihn
+    // weg, auch an dem Tag, an dem er recht hat.
+    is('/assets/main.css', seiten_ohne_pruefwert('/assets/main-DxirPQad.css'),
+        'Der Pruefwert faellt weg');
+    is('/assets/three.js', seiten_ohne_pruefwert('/assets/three-NAXOs3fP.js'),
+        'Auch beim JavaScript');
+
+    // Aber nur der. Alles andere bleibt, wie es ist.
+    is('/kontakt', seiten_ohne_pruefwert('/kontakt'), 'Eine Seite bleibt unberuehrt');
+    is('/assets/img/favicon.svg', seiten_ohne_pruefwert('/assets/img/favicon.svg'),
+        'Ein Bild hat keinen Pruefwert und behaelt seinen Namen');
+    is('/assets/webatze.css', seiten_ohne_pruefwert('/assets/webatze.css'),
+        'Eine Datei ohne Pruefwert bleibt, wie sie heisst');
+
+    // Und die Prueflinie muss den Unterschied wirklich ueberstehen.
+    $eins = ['ueberschriften' => ['A'], 'abschnitte' => ['x'], 'sprungmarken' => [],
+        'verweise' => ['/assets/main-AAAAAAAA.css', '/kontakt']];
+    $zwei = ['ueberschriften' => ['A'], 'abschnitte' => ['x'], 'sprungmarken' => [],
+        'verweise' => ['/assets/main-BBBBBBBB.css', '/kontakt']];
+
+    $normal = static fn (array $g): array => array_merge($g, [
+        'verweise' => array_map('seiten_ohne_pruefwert', $g['verweise']),
+    ]);
+
+    is(seiten_pruefsumme($normal($eins)), seiten_pruefsumme($normal($zwei)),
+        'Zwei Baustaende ergeben dieselbe Pruefsumme');
+
+    // Verschwindet das Stilpaket dagegen ganz, schlaegt sie weiterhin an.
+    $ohne = ['ueberschriften' => ['A'], 'abschnitte' => ['x'], 'sprungmarken' => [],
+        'verweise' => ['/kontakt']];
+
+    ok(seiten_pruefsumme($normal($eins)) !== seiten_pruefsumme($normal($ohne)),
+        'Eine fehlende Datei faellt aber auf');
 });
 
 // ==================================================================

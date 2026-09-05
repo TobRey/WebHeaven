@@ -143,6 +143,19 @@
   cursor: not-allowed;
 }
 
+/* Dasselbe fuer Felder.
+ *
+ * Ein gesperrter Knopf sah gesperrt aus, ein gesperrtes Feld nicht:
+ * Der dunkle Entwurf ueberschreibt, was der Browser von sich aus
+ * ausgraut. Ein Feld, das aussieht wie immer und nichts annimmt, ist
+ * schlimmer als eines, das gar nicht da ist. */
+.wa-input:disabled,
+.wa-textarea:disabled,
+.wa-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .wa-btn__arrow {
   transition: transform var(--wa-dur-base) var(--wa-ease-spring);
 }
@@ -166,8 +179,18 @@
   color: var(--wa-text);
 }
 
+/* Der kleine Zusatz an einem Feld.
+ *
+ * Der margin-inline-start verraet, wofuer die Regel gedacht war:
+ * innerhalb eines <label>, hinter dem Text. Dort erbt sie die kleine
+ * Schrift des Labels. Steht sie darunter als eigener Block - und das
+ * tut sie inzwischen oefter als daneben - erbt sie die Groesse des
+ * Fliesstexts und schreit den Hinweis lauter heraus als das Feld,
+ * zu dem er gehoert. Die Groesse gehoert also in die Regel selbst.
+ * Im Label aendert das nichts: rem, nicht em. */
 .wa-label__hint {
   margin-inline-start: var(--wa-space-2);
+  font-size: var(--wa-text-sm);
   font-weight: var(--wa-weight-normal);
   color: var(--wa-text-faint);
 }

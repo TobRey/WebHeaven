@@ -55,6 +55,7 @@ final class Pipeline
             'zip' => self::zipOnly($job),
             'deploy' => self::deploy($job, $budget),
             'live' => self::pullLive($job, $budget),
+            'zip-hochladen' => self::deployZip($job, $budget),
             default => throw new RuntimeException('Unbekannte Auftragsart: ' . $type),
         };
     }
@@ -978,6 +979,74 @@ final class Pipeline
                 ? ' Achtung: unvollständig, eine Grenze war erreicht.'
                 : ''
         ));
+    }
+
+    /**
+     * Ein hochgeladenes Archiv auf den Kundenserver schieben.
+     *
+     * Der Weg ohne den eingebauten Generator: Auftragstext kopieren,
+     * die Website anderswo bauen lassen, das Ergebnis hier hochladen.
+     */
+    private static function deployZip(array $job, float $budget): void
+    {
+        $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
+
+        if ($project === null) {
+            Jobs::fail($job['id'], 'Projekt nicht gefunden.', false);
+
+            return;
+        }
+
+        $zip = (string) ($job['payload']['zip'] ?? '');
+
+        // Nur aus dem eigenen Ablageordner - der Pfad kommt aus dem
+        // Auftrag, und ein Auftrag ist eine Datenbankzeile.
+        $erlaubt = STORAGE_DIR . '/uploads/';
+
+        if ($zip === '' || !str_starts_with($zip, $erlaubt) || !is_file($zip)) {
+            Jobs::fail($job['id'], 'Das hochgeladene Archiv ist nicht mehr da.', false);
+
+            return;
+        }
+
+        Jobs::progress($job['id'], 'hochladen', 10, 'Verbindung wird aufgebaut …');
+
+        $ergebnis = FtpDeployer::deployZip(
+            $project,
+            $zip,
+            static function (int $fertig, int $gesamt, string $datei) use ($job): void {
+                Jobs::progress(
+                    $job['id'],
+                    'hochladen',
+                    10 + (int) round(85 * ($gesamt > 0 ? $fertig / $gesamt : 0)),
+                    sprintf('%d von %d Dateien (%s)', $fertig, $gesamt, $datei)
+                );
+            },
+            $budget - 5.0
+        );
+
+        // Das Archiv hat seinen Zweck erfüllt. Es liegen zu lassen
+        // hiesse, fremde Dateien ohne Grund aufzubewahren.
+        @unlink($zip);
+
+        if (!$ergebnis['ok']) {
+            Jobs::fail($job['id'], $ergebnis['error'], $ergebnis['retryable'] ?? true);
+
+            return;
+        }
+
+        Jobs::progress($job['id'], 'fertig', 100, 'Hochgeladen.', ['deploy' => $ergebnis]);
+        Jobs::finish($job['id'], sprintf('%d Dateien aus dem Archiv hochgeladen.', $ergebnis['files']));
+
+        Db::update('projects', [
+            'status' => 'live',
+            'published_at' => Db::now(),
+            'updated_at' => Db::now(),
+        ], 'id = :id', ['id' => (int) $project['id']]);
+
+        Audit::log('project.deployed.zip', (string) $project['name'], [
+            'dateien' => $ergebnis['files'],
+        ]);
     }
 
     private static function deploy(array $job, float $budget): void

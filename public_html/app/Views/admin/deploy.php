@@ -45,6 +45,94 @@ $latest = $builds[0] ?? null;
     </section>
 <?php endif; ?>
 
+<?php
+/**
+ * Die zwei Knöpfe, um die es geht: hinauf und herunter.
+ *
+ * Sie stehen zuoberst und nebeneinander, weil sie ein Paar sind: Das
+ * eine schiebt eine fertige Website auf den Server, das andere holt,
+ * was gerade darauf liegt. Beides braucht nur die Zugangsdaten
+ * darunter und nichts sonst – insbesondere keinen Bau hier im Haus.
+ *
+ * Ohne hinterlegte Zugangsdaten bleiben beide trotzdem stehen, nur
+ * stumpf. Ein Knopf, der ganz verschwindet, erklärt nichts: Man sucht
+ * ihn dann dort, wo er nie war. Steht er da und sagt „mir fehlen die
+ * Zugangsdaten", weiss man in derselben Sekunde, was zu tun ist.
+ */
+$bereit = $target !== null;
+?>
+<section class="wa-panel wa-transfer">
+    <div class="wa-panel__head">
+        <h2 class="wa-panel__title">Website hochladen und herunterladen</h2>
+        <?php if (!$bereit): ?>
+            <div class="wa-panel__actions">
+                <a class="wa-btn wa-btn--primary wa-btn--sm" href="#zugang">Zugangsdaten eintragen</a>
+            </div>
+        <?php endif; ?>
+        <p class="wa-panel__hint">
+            <?php if ($bereit): ?>
+                Beides geht über die Zugangsdaten weiter unten. Für das Hochladen
+                brauchst du kein hier gebautes Paket &ndash; ein fertiges ZIP genügt.
+            <?php else: ?>
+                Beides braucht die Zugangsdaten zum Server des Kunden. Die stehen
+                weiter unten unter &bdquo;Zugang zum Server des Kunden&ldquo; und
+                fehlen noch &ndash; danach sind beide Knöpfe hier scharf.
+            <?php endif; ?>
+        </p>
+    </div>
+
+    <div class="wa-grid-2">
+        <div class="wa-field">
+            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/archiv"
+                  enctype="multipart/form-data" class="wa-form">
+                <?= Csrf::field() ?>
+
+                <label class="wa-label" for="archiv">Website hochladen (ZIP)</label>
+                <input class="wa-input" type="file" id="archiv" name="archiv"
+                       accept=".zip,application/zip"<?= $bereit ? '' : ' disabled' ?>>
+                <span class="wa-label__hint">
+                    Das Ergebnis aus dem Auftragstext, so wie es kommt. Liegt alles
+                    in einem Ordner, wird der weggeschnitten &ndash; die Startseite
+                    landet also direkt im Zielverzeichnis. Höchstens
+                    <?= (int) (\WebAtze\Http\DeployController::MAX_ARCHIV_BYTES / 1024 / 1024) ?>&nbsp;MB.
+                </span>
+
+                <div class="wa-form__actions">
+                    <?php if ($bereit): ?>
+                        <button type="submit" class="wa-btn wa-btn--primary"
+                                data-confirm="Das Archiv jetzt auf den Server des Kunden laden? Bestehende Dateien im Zielverzeichnis werden überschrieben.">
+                            Hochladen
+                        </button>
+                    <?php else: ?>
+                        <button type="button" class="wa-btn wa-btn--primary" disabled>Hochladen</button>
+                    <?php endif; ?>
+                </div>
+            </form>
+        </div>
+
+        <div class="wa-field">
+            <span class="wa-label">Alle Dateien herunterladen</span>
+            <span class="wa-label__hint">
+                Holt, was in diesem Moment tatsächlich auf dem Server liegt &ndash;
+                samt hochgeladener Bilder, eingegangener Anfragen und im Backend
+                geänderter Texte. Als ZIP, unter &bdquo;Paket&ldquo; zum Herunterladen.
+            </span>
+
+            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/stand-holen"
+                  class="wa-form">
+                <?= Csrf::field() ?>
+                <div class="wa-form__actions">
+                    <?php if ($bereit): ?>
+                        <button type="submit" class="wa-btn">Aktuellen Stand holen</button>
+                    <?php else: ?>
+                        <button type="button" class="wa-btn" disabled>Aktuellen Stand holen</button>
+                    <?php endif; ?>
+                </div>
+            </form>
+        </div>
+    </div>
+</section>
+
 <?php /* -------------------------------------------------------------- Pakete */ ?>
 <section class="wa-panel">
     <div class="wa-panel__head">
@@ -54,12 +142,6 @@ $latest = $builds[0] ?? null;
                 <?= Csrf::field() ?>
                 <button type="submit" class="wa-btn wa-btn--sm">Neues Paket erstellen</button>
             </form>
-            <?php if ($target !== null): ?>
-                <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/stand-holen">
-                    <?= Csrf::field() ?>
-                    <button type="submit" class="wa-btn wa-btn--sm">Aktuellen Stand holen</button>
-                </form>
-            <?php endif; ?>
         </div>
     </div>
 
@@ -138,7 +220,7 @@ $latest = $builds[0] ?? null;
 </section>
 
 <?php /* ------------------------------------------------------------ Zugangsdaten */ ?>
-<section class="wa-panel">
+<section class="wa-panel" id="zugang">
     <div class="wa-panel__head">
         <h2 class="wa-panel__title">Zugang zum Server des Kunden</h2>
         <p class="wa-panel__hint">
@@ -239,8 +321,11 @@ $latest = $builds[0] ?? null;
                     <option value="ftp" <?= $protocol === 'ftp' ? 'selected' : '' ?>>FTP</option>
                 </select>
                 <span class="wa-label__hint">
-                    SFTP verschlüsselt alles. Reines FTP schickt das Passwort im Klartext –
-                    nur nehmen, wenn der Anbieter nichts anderes anbietet.
+                    <strong>Bei GoDaddy: FTP mit Verschlüsselung</strong>, Port 21.
+                    GoDaddy schreibt es selbst in die Zugangsdaten
+                    (&bdquo;FTP &amp; explicit FTPS port: 21&ldquo;) &ndash; derselbe
+                    Port, nur verschlüsselt. Reines FTP schickt das Passwort im
+                    Klartext; SFTP ist dort meist nicht freigeschaltet.
                 </span>
             </div>
 
@@ -262,12 +347,34 @@ $latest = $builds[0] ?? null;
                        value="<?= e((string) ($target['host'] ?? '')) ?>">
                 <span class="wa-label__hint">
                     Nur der Name, ohne <code>ftp://</code> und ohne Pfad.
-                    <strong>Bei cPanel und GoDaddy kein <code>ftp.</code> davor</strong> &ndash;
-                    diesen Eintrag gibt es dort nicht, und dann findet der Test
-                    keinen Server statt einen falschen. Die Domain selbst passt,
-                    sonst der Servername aus cPanel rechts unter
-                    &bdquo;Allgemeine Informationen&ldquo;.
+                    <br>
+                    GoDaddy zeigt in cPanel <code>ftp.deine-domain.ch</code> an. Das
+                    funktioniert nur, wenn in der DNS-Zone ein <code>ftp</code>-Eintrag
+                    steht &ndash; und den legt GoDaddy nicht immer an. Löst der Name
+                    nicht auf, nimm dieselbe Domain <strong>ohne <code>ftp.</code></strong>
+                    davor, etwa <code>web-atze.com</code>. Sonst hilft der Servername
+                    aus cPanel rechts unter &bdquo;Allgemeine Informationen&ldquo;.
+                    Der Verbindungstest probiert beides und sagt, welcher geht.
                 </span>
+
+                <?php
+                /* Der Name, den der letzte Test als auflösend gefunden hat.
+                   Er steht hier zum Anklicken: Ihn noch einmal von Hand
+                   richtig zu treffen ist genau die Gelegenheit für den
+                   nächsten Tippfehler. */
+                $hostVorschlag = (string) ($gefunden['vorschlagHost'] ?? '');
+                ?>
+                <?php if ($hostVorschlag !== ''): ?>
+                    <div class="wa-found">
+                        <p class="wa-found__title">Dieser Name löst auf &ndash; zum Übernehmen anklicken:</p>
+                        <div class="wa-found__list">
+                            <button type="button" class="wa-found__item is-suggested"
+                                    data-fill="#host" data-fill-value="<?= e($hostVorschlag) ?>">
+                                <?= e($hostVorschlag) ?>
+                            </button>
+                        </div>
+                    </div>
+                <?php endif; ?>
             </div>
 
             <div class="wa-field">

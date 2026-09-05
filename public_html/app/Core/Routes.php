@@ -280,6 +280,9 @@ final class Routes
             // bereits, und ein zweiter Automatismus verdoppelte Last
             // und Speicherbedarf, ohne etwas hinzuzufuegen.
             $r->post($base . '/projekt/{id}/stand-holen', 'DeployController@pullLive');
+            // Ein fertiges Archiv statt eines gebauten Pakets - der Weg
+            // ohne den eingebauten Generator.
+            $r->post($base . '/projekt/{id}/archiv', 'DeployController@uploadZip');
             $r->post($base . '/projekt/{id}/ftp', 'DeployController@saveTarget');
             $r->post($base . '/projekt/{id}/ftp/testen', 'DeployController@testTarget');
             $r->post($base . '/projekt/{id}/domain', 'DomainController@save');

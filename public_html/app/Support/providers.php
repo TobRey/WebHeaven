@@ -34,8 +34,9 @@ return [
                 'Beim gewünschten Konto auf <strong>Konfigurieren Sie den FTP-Client</strong> klicken – dort stehen Server, Benutzername und Port.',
                 'Das Passwort ist das, das beim Anlegen vergeben wurde. Es lässt sich dort auch neu setzen.',
             ],
-            'note' => 'Der Server ist die Domain oder der Servername aus cPanel – <strong>nie</strong> '
-                . '<code>ftp.</code> davor, diesen Eintrag legt cPanel nicht an. '
+            'note' => 'Zum Server: cPanel zeigt oft <code>ftp.</code> vor der Domain an. '
+                . 'Das geht nur mit passendem DNS-Eintrag – fehlt er, nimm die Domain '
+                . 'selbst oder den Servernamen aus cPanel. '
                 . 'Beim Verzeichnis kommt es auf den Zugang an: Ein Unterkonto (Benutzername mit '
                 . '<code>@</code>) sitzt bereits in seinem Ordner, dort ist es <code>/</code>. '
                 . 'Beim Hauptkonto ist es <code>/public_html</code>, bei einer Subdomain '
@@ -44,7 +45,10 @@ return [
 
         'godaddy' => [
             'name' => 'GoDaddy (cPanel)',
-            'protocol' => 'ftp',
+            // Verschluesselt auf demselben Port: GoDaddy nennt es in den
+            // Zugangsdaten selbst "FTP & explicit FTPS port: 21". Es
+            // kostet nichts und das Passwort geht nicht im Klartext hin.
+            'protocol' => 'ftps',
             'port' => 21,
             'path' => '/public_html',
             'steps' => [
@@ -52,9 +56,9 @@ return [
                 'Beim Webhosting-Paket auf <strong>Verwalten</strong> klicken.',
                 'Über <strong>cPanel-Admin</strong> das cPanel öffnen.',
                 'Unter „Dateien" auf <strong>FTP-Konten</strong>. Ein bestehendes Konto nehmen oder ein neues anlegen.',
-                'Als <strong>Server</strong> die Domain selbst eintragen, also <code>deine-domain.ch</code> – <strong>nicht</strong> <code>ftp.deine-domain.ch</code>. Diesen Namen gibt es bei cPanel nicht. Alternativ der Servername, der in cPanel rechts unter „Allgemeine Informationen" steht.',
+                'Als <strong>Server</strong> steht dort <code>ftp.deine-domain.ch</code>. Das geht nur, wenn die DNS-Zone einen <code>ftp</code>-Eintrag führt – und den legt GoDaddy nicht immer an. Löst er nicht auf, dieselbe Domain <strong>ohne <code>ftp.</code></strong> nehmen, oder den Servernamen aus cPanel rechts unter „Allgemeine Informationen".',
                 'Als <strong>Benutzername</strong> genau das, was cPanel anzeigt – die volle Form mit <code>@</code>, also <code>web@deine-domain.ch</code>.',
-                'Port <strong>21</strong>, Übertragungsart <strong>FTP</strong>. SFTP ist bei GoDaddy im Standardpaket meist nicht freigeschaltet.',
+                'Port <strong>21</strong>, Übertragungsart <strong>FTP mit Verschlüsselung</strong> – GoDaddy schreibt in den Zugangsdaten selbst „FTP &amp; explicit FTPS port: 21". Derselbe Port, nur verschlüsselt. SFTP ist im Standardpaket meist nicht freigeschaltet.',
             ],
             'note' => '<strong>Das Verzeichnis ist die häufigste Stolperstelle.</strong> '
                 . 'Ein FTP-Unterkonto (Benutzername mit <code>@</code>) wird beim Anlegen auf sein '

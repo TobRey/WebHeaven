@@ -12,6 +12,16 @@ use WebAtze\Core\{Audit, Config, Crypto, Db, Jobs, Logger, Request, Response, Se
  */
 final class DeployController
 {
+    /**
+     * So gross darf ein hochgeladenes Website-Archiv sein.
+     *
+     * Eine Website mit Bildern kommt selten über 60 MB; alles darüber
+     * ist eher ein Versehen als eine Website. Der Server selbst setzt
+     * mit upload_max_filesize meist eine engere Grenze - dann greift
+     * die zuerst, und die Meldung sagt das auch.
+     */
+    public const MAX_ARCHIV_BYTES = 120 * 1024 * 1024;
+
     public function show(Request $request): Response
     {
         $project = ProjectController::find($request->paramInt('id'));
@@ -165,6 +175,9 @@ final class DeployController
         Session::put('ftp_ordner_' . (int) $project['id'], [
             'ordner' => (array) ($result['ordner'] ?? []),
             'vorschlag' => (string) ($result['vorschlag'] ?? ''),
+            // Der Servername, der auflöst - zum Anklicken statt zum
+            // Abtippen.
+            'vorschlagHost' => (string) ($result['vorschlagHost'] ?? ''),
             // Die einzelnen Stufen: Servername, Verbindung, Anmeldung,
             // Passivmodus, Startordner, Inhalt, Zielordner, Schreibprobe.
             // Die erste rote Stufe ist die Diagnose - und dass die
@@ -249,6 +262,114 @@ final class DeployController
         Session::flash('success', 'Der Stand wird geholt. Das dauert je nach Grösse eine Weile.');
 
         return $this->back($project);
+    }
+
+    /**
+     * Ein fertiges ZIP entgegennehmen und aufs FTP schieben.
+     *
+     * Der Weg ohne den eingebauten Generator: Auftragstext kopieren,
+     * die Website anderswo bauen lassen, das Ergebnis hier hochladen.
+     *
+     * Das Archiv wird bei uns nie ausgepackt – jeder Eintrag geht als
+     * Datenstrom direkt aus dem ZIP auf das FTP. Eine Kundenwebsite
+     * enthält PHP, und ausgepackte fremde PHP-Dateien auf dem eigenen
+     * Webserver sind eine Hintertür, ganz gleich wie gut der Ordner
+     * gesperrt ist.
+     */
+    public function uploadZip(Request $request): Response
+    {
+        $project = ProjectController::find($request->paramInt('id'));
+
+        if ($project === null) {
+            return Response::notFound();
+        }
+
+        if (Jobs::activeFor((int) $project['id']) !== null) {
+            Session::flash('warning', 'Für dieses Projekt läuft bereits ein Auftrag.');
+
+            return $this->back($project);
+        }
+
+        $ziel = Db::first(
+            'SELECT id FROM deploy_targets WHERE project_id = :p LIMIT 1',
+            ['p' => (int) $project['id']]
+        );
+
+        if ($ziel === null) {
+            Session::flash('error',
+                'Ohne Zugangsdaten gibt es kein Ziel. Trage sie unten ein und teste die Verbindung.');
+
+            return $this->back($project);
+        }
+
+        $datei = $request->file('archiv');
+
+        if ($datei === null || (int) ($datei['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+            Session::flash('error', $datei === null
+                ? 'Es ist keine Datei angekommen.'
+                : self::uploadFehler((int) $datei['error']));
+
+            return $this->back($project);
+        }
+
+        $tmp = (string) ($datei['tmp_name'] ?? '');
+
+        // is_uploaded_file und nicht bloss is_file: Ohne diese Prüfung
+        // liesse sich über den Namen jede Datei auf dem Server als
+        // Archiv ausgeben.
+        if ($tmp === '' || !is_uploaded_file($tmp)) {
+            Session::flash('error', 'Diese Datei kam nicht über das Formular. Abgelehnt.');
+
+            return $this->back($project);
+        }
+
+        $groesse = (int) filesize($tmp);
+
+        if ($groesse > self::MAX_ARCHIV_BYTES) {
+            Session::flash('error', sprintf(
+                'Das Archiv ist %s gross. Mehr als %s nimmt dieser Server nicht an.',
+                format_bytes($groesse),
+                format_bytes(self::MAX_ARCHIV_BYTES)
+            ));
+
+            return $this->back($project);
+        }
+
+        $ordner = ensure_dir(STORAGE_DIR . '/uploads');
+        $pfad = $ordner . '/website-' . (int) $project['id'] . '-' . bin2hex(random_bytes(6)) . '.zip';
+
+        if (!@move_uploaded_file($tmp, $pfad)) {
+            Session::flash('error', 'Das Archiv liess sich nicht ablegen.');
+
+            return $this->back($project);
+        }
+
+        Jobs::enqueue('zip-hochladen', ['zip' => $pfad], (int) $project['id']);
+        Jobs::nudge();
+
+        Audit::log('deploy.zip.started', (string) $project['name'], [
+            'bytes' => $groesse,
+        ], $request);
+
+        Session::flash('success',
+            'Das Archiv wird hochgeladen. Der Fortschritt erscheint gleich hier.');
+
+        return $this->back($project);
+    }
+
+    /** Was PHP zum fehlgeschlagenen Upload sagt, auf Deutsch. */
+    private static function uploadFehler(int $code): string
+    {
+        return match ($code) {
+            UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE =>
+                'Die Datei ist grösser, als dieser Server annimmt (upload_max_filesize).',
+            UPLOAD_ERR_PARTIAL => 'Die Übertragung ist abgebrochen. Nochmal versuchen.',
+            UPLOAD_ERR_NO_FILE => 'Es war keine Datei ausgewählt.',
+            UPLOAD_ERR_NO_TMP_DIR, UPLOAD_ERR_CANT_WRITE =>
+                'Der Server kann die Datei nicht zwischenspeichern. Das ist ein '
+                . 'Serverproblem, kein Dateiproblem.',
+            default => 'Die Datei ist nicht angekommen.',
+        };
     }
 
     private function back(array $project): Response

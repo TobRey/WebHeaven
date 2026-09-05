@@ -1,85 +1,85 @@
 {
     "start@de": {
         "pfad": "/",
-        "pruefsumme": "d30cf3f4096630cc",
+        "pruefsumme": "f4ec607c429247bf",
         "ueberschriften": 32,
         "abschnitte": 7
     },
     "start@en": {
         "pfad": "/en",
-        "pruefsumme": "23d265b325ab6860",
+        "pruefsumme": "251e8ae44298f60b",
         "ueberschriften": 32,
         "abschnitte": 7
     },
     "services@de": {
         "pfad": "/leistungen",
-        "pruefsumme": "0b6466fcb89b2d8b",
+        "pruefsumme": "a794b0b94f4e1f6e",
         "ueberschriften": 11,
         "abschnitte": 2
     },
     "services@en": {
         "pfad": "/en/services",
-        "pruefsumme": "fadca902bc3da68b",
+        "pruefsumme": "0e63dcb39e3720f4",
         "ueberschriften": 11,
         "abschnitte": 2
     },
     "process@de": {
         "pfad": "/ablauf",
-        "pruefsumme": "a2d096e097bd716a",
+        "pruefsumme": "3793daf70746e33c",
         "ueberschriften": 10,
         "abschnitte": 3
     },
     "process@en": {
         "pfad": "/en/process",
-        "pruefsumme": "2e218ec5654f672d",
+        "pruefsumme": "38223bfceda1d5ec",
         "ueberschriften": 10,
         "abschnitte": 3
     },
     "work@de": {
         "pfad": "/referenzen",
-        "pruefsumme": "4e85859c05120d42",
+        "pruefsumme": "4d03aaf45e27a577",
         "ueberschriften": 25,
         "abschnitte": 2
     },
     "work@en": {
         "pfad": "/en/work",
-        "pruefsumme": "0bfecaea1b03ea08",
+        "pruefsumme": "a91771e910ee3439",
         "ueberschriften": 25,
         "abschnitte": 2
     },
     "contact@de": {
         "pfad": "/kontakt",
-        "pruefsumme": "149ec71e6ff62684",
+        "pruefsumme": "4587005da637a4b1",
         "ueberschriften": 4,
         "abschnitte": 1
     },
     "contact@en": {
         "pfad": "/en/contact",
-        "pruefsumme": "b9bca20194537558",
+        "pruefsumme": "f768e744b175f681",
         "ueberschriften": 4,
         "abschnitte": 1
     },
     "imprint@de": {
         "pfad": "/impressum",
-        "pruefsumme": "0aa4c8f77f0c5be9",
+        "pruefsumme": "e07610c840c89f7e",
         "ueberschriften": 7,
         "abschnitte": 1
     },
     "imprint@en": {
         "pfad": "/en/imprint",
-        "pruefsumme": "c084a1d92b2e9568",
+        "pruefsumme": "5fc54815d890dbad",
         "ueberschriften": 7,
         "abschnitte": 1
     },
     "privacy@de": {
         "pfad": "/datenschutz",
-        "pruefsumme": "5074b887d7efe723",
+        "pruefsumme": "8658e90b548b145d",
         "ueberschriften": 10,
         "abschnitte": 1
     },
     "privacy@en": {
         "pfad": "/en/privacy",
-        "pruefsumme": "83195b6ba2f771ff",
+        "pruefsumme": "afe98e217cfb745b",
         "ueberschriften": 10,
         "abschnitte": 1
     }

@@ -18,7 +18,7 @@ use WebAtze\Core\Csrf;
 $k = $konto ?? [];
 $id = (int) ($k['id'] ?? 0);
 $neu = $id === 0;
-$protokoll = (string) ($k['protocol'] ?? 'ftp');
+$protokoll = (string) ($k['protocol'] ?? 'ftps');
 $godaddy = $anbieter['hosting']['godaddy'] ?? [];
 ?>
 
@@ -59,8 +59,10 @@ $godaddy = $anbieter['hosting']['godaddy'] ?? [];
             <option value="sftp"<?= $protokoll === 'sftp' ? ' selected' : '' ?>>SFTP</option>
         </select>
         <span class="wa-label__hint">
-            Bei GoDaddy im Standardpaket <strong>FTP</strong> &ndash; SFTP ist dort
-            meist nicht freigeschaltet.
+            Bei GoDaddy <strong>FTP mit Verschlüsselung</strong> auf demselben
+            Port 21 &ndash; GoDaddy nennt es &bdquo;explicit FTPS&ldquo; und schreibt
+            es selbst in die Zugangsdaten. Reines FTP schickt das Passwort im
+            Klartext, SFTP ist dort meist nicht freigeschaltet.
         </span>
     </div>
 
@@ -70,11 +72,14 @@ $godaddy = $anbieter['hosting']['godaddy'] ?? [];
                placeholder="deine-domain.ch" data-ftp-field="host"
                value="<?= e((string) ($k['host'] ?? '')) ?>">
         <span class="wa-label__hint">
-            Beispiel: <code>web-atze.com</code> &middot;
-            <strong>nie <code>ftp.web-atze.com</code></strong> &ndash; diesen Namen
-            legt cPanel nicht an. Sonst der Servername aus cPanel rechts unter
-            &bdquo;Allgemeine Informationen&ldquo;, etwa
+            GoDaddy zeigt in cPanel <code>ftp.deine-domain.ch</code> an. Das
+            funktioniert nur, wenn in der DNS-Zone ein <code>ftp</code>-Eintrag
+            steht &ndash; und den legt GoDaddy nicht immer an. Löst er nicht auf,
+            nimm dieselbe Domain <strong>ohne <code>ftp.</code></strong> davor,
+            etwa <code>web-atze.com</code>. Sonst der Servername aus cPanel rechts
+            unter &bdquo;Allgemeine Informationen&ldquo;, etwa
             <code>a2plzcpnl1234.prod.iad2.secureserver.net</code>.
+            Der Verbindungstest probiert beides und nennt den, der geht.
         </span>
     </div>
 

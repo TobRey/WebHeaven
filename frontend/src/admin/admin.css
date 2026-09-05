@@ -623,6 +623,27 @@
   padding-block-start: var(--wa-space-2);
 }
 
+/* Hinauf und herunter: ein Paar, also auch eine Linie.
+ *
+ * Die beiden Spalten sind unterschiedlich lang - links steht ein
+ * Dateifeld mehr. Ohne das hier haengt der eine Knopf auf halber
+ * Hoehe und der andere weit darunter, und was als Paar gedacht ist,
+ * sieht aus wie zwei uebriggebliebene Teile. */
+.wa-transfer .wa-field {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+}
+
+.wa-transfer .wa-form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--wa-space-2);
+}
+
+.wa-transfer .wa-form__actions { margin-block-start: auto; }
+
 /* Ausklappbare Hilfe, z.B. "wo finde ich meine FTP-Daten?" */
 .wa-help {
   border: 1px solid var(--wa-border);
