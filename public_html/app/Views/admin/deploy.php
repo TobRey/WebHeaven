@@ -140,6 +140,61 @@ $bereit = $target !== null;
     </div>
 </section>
 
+<?php
+/**
+ * Der Weg ohne FTP.
+ *
+ * Aufgeklappt nur, wer ihn braucht: Solange FTP läuft, ist er Ballast.
+ * Kommt die Datenverbindung nicht durch - und der Knopf „Kann dieser
+ * Server überhaupt FTP?" sagt, ob es daran liegt -, ist er der einzige
+ * Weg, der noch bleibt.
+ */
+?>
+<details class="wa-help wa-transfer-alt">
+    <summary>FTP kommt nicht durch? Der Weg über HTTPS</summary>
+    <div class="wa-help__body">
+        <p>
+            FTP braucht zwei Verbindungen: eine für die Befehle und für jede Datei
+            eine zweite auf einem hohen Port. Genau die zweite wird auf manchem
+            Hosting verworfen &ndash; dann hilft kein Einstellen mehr.
+            HTTPS braucht nur eine, auf Port 443, und die ist überall offen.
+        </p>
+        <ol>
+            <li>
+                <a href="<?= e($base) ?>/projekt/<?= $id ?>/empfaenger">Empfangsdatei herunterladen</a>
+                &ndash; sie wird als <code>webatze-empfang.php.txt</code> gespeichert.
+            </li>
+            <li>
+                Mit deinem FTP-Programm vom eigenen Rechner in das Verzeichnis der
+                Website legen und dabei in <code>webatze-empfang.php</code>
+                umbenennen (das <code>.txt</code> weg).
+            </li>
+            <li>Hier das ZIP hochladen &ndash; es geht dann über HTTPS.</li>
+        </ol>
+        <p class="wa-label__hint">
+            Die Datei trägt einen eigenen Schlüssel, nimmt nur unterschriebene
+            Anfragen an und <strong>löscht sich nach dem Hochladen selbst</strong>
+            &ndash; spätestens aber nach 24 Stunden.
+        </p>
+
+        <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/archiv-bruecke"
+              enctype="multipart/form-data" class="wa-form">
+            <?= Csrf::field() ?>
+
+            <label class="wa-label" for="archiv-bruecke">ZIP über HTTPS hochladen</label>
+            <input class="wa-input" type="file" id="archiv-bruecke" name="archiv"
+                   accept=".zip,application/zip">
+
+            <div class="wa-form__actions">
+                <button type="submit" class="wa-btn"
+                        data-confirm="Das Archiv jetzt über HTTPS auf die Website laden? Bestehende Dateien werden überschrieben.">
+                    Über HTTPS hochladen
+                </button>
+            </div>
+        </form>
+    </div>
+</details>
+
 <?php /* -------------------------------------------------------------- Pakete */ ?>
 <section class="wa-panel">
     <div class="wa-panel__head">
@@ -381,35 +436,28 @@ $bereit = $target !== null;
 
     <?php
     /**
-     * Das Ergebnis des letzten Tests, Stufe fuer Stufe.
+     * Was der letzte Test gemessen hat.
      *
-     * Frueher stand hier eine einzige rote Zeile. Sieben verschiedene
-     * Ursachen sahen damit gleich aus - ein Servername, den es nicht
-     * gibt, genauso wie ein Ordner, der eine Ebene tiefer liegt. Die
-     * Kette macht sichtbar, wie weit es gekommen ist: Die erste rote
-     * Stufe ist die Antwort, und alles Gruene davor ist der Beweis,
-     * dass daran nichts mehr zu suchen ist.
+     * Frueher stand hier eine Kette aus acht Stufen. Sie sollte die
+     * Ursache zeigen und hat sie laufend verwechselt - ein leerer
+     * Ordner als Netzfehler, ein "gibt es nicht" ueber einem 250 Ok.
+     * Jetzt steht das Urteil als Meldung oben, und hier liegt nur noch,
+     * was tatsaechlich gemessen wurde: aufgeklappt fuer den, der es
+     * braucht, und aus dem Weg fuer alle anderen.
      */
-    $stufen = (array) ($gefunden['stufen'] ?? []);
+    $einzelheiten = (array) ($gefunden['details'] ?? []);
     ?>
-    <?php if ($stufen !== []): ?>
-        <div class="wa-stufen">
-            <h3 class="wa-stufen__title">
-                Letzter Verbindungstest
-                <?php if ((string) ($gefunden['zeit'] ?? '') !== ''): ?>
-                    <span class="wa-stufen__time"><?= e((string) $gefunden['zeit']) ?></span>
-                <?php endif; ?>
-            </h3>
-            <ol class="wa-stufen__list">
-                <?php foreach ($stufen as $stufe): ?>
-                    <li class="wa-stufen__item<?= ($stufe['ok'] ?? false) ? ' is-ok' : ' is-bad' ?>">
-                        <span class="wa-stufen__mark" aria-hidden="true"><?= ($stufe['ok'] ?? false) ? '&check;' : '&times;' ?></span>
-                        <span class="wa-stufen__name"><?= e((string) ($stufe['name'] ?? '')) ?></span>
-                        <span class="wa-stufen__info"><?= e((string) ($stufe['info'] ?? '')) ?></span>
-                    </li>
-                <?php endforeach; ?>
-            </ol>
-        </div>
+    <?php if ($einzelheiten !== []): ?>
+        <details class="wa-help">
+            <summary>Was der Test gemessen hat</summary>
+            <div class="wa-help__body">
+                <ol>
+                    <?php foreach ($einzelheiten as $zeile): ?>
+                        <li><?= e((string) $zeile) ?></li>
+                    <?php endforeach; ?>
+                </ol>
+            </div>
+        </details>
     <?php endif; ?>
 
     <?php if ($target !== null): ?>
@@ -417,6 +465,14 @@ $bereit = $target !== null;
             <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/ftp/testen">
                 <?= Csrf::field() ?>
                 <button type="submit" class="wa-btn">Verbindung testen</button>
+            </form>
+            <?php /* Braucht keine Zugangsdaten: Er fragt, ob dieser
+                     Server ueberhaupt eine FTP-Datenverbindung nach
+                     draussen aufbauen darf. Scheitert es beim Kunden,
+                     trennt diese Probe "seine Firewall" von "unsere". */ ?>
+            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/ftp/ausgang">
+                <?= Csrf::field() ?>
+                <button type="submit" class="wa-btn wa-btn--quiet">Kann dieser Server überhaupt FTP?</button>
             </form>
             <?php /* Ohne gebautes Paket gibt es nichts hochzuladen - dann
                      bleibt der Knopf weg, statt eine Fehlermeldung zu

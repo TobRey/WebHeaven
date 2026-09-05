@@ -201,89 +201,74 @@ final class FtpDeployer
         float $budget,
         bool $secure
     ): array {
-        if (!function_exists('ftp_connect')) {
-            return self::error(
-                'Dieser Server kann kein FTP - die passende PHP-Erweiterung ist nicht '
-                . 'eingebaut. Stelle unter Veroeffentlichen auf SFTP um (Port 22). '
-                . 'Das bringt WebAtze selbst mit und funktioniert ueberall.',
-                false
-            );
-        }
-
         $sauber = self::normalizeHost((string) $target['host'], (int) $target['port'] ?: 21);
-        $host = $sauber['host'];
-        $port = $sauber['port'];
 
-        $connection = $secure
-            ? @ftp_ssl_connect($host, $port, 20)
-            : @ftp_connect($host, $port, 20);
+        $ftp = Ftp::oeffnen([
+            'host' => $sauber['host'],
+            'port' => $sauber['port'],
+            'username' => (string) $target['username'],
+            'password' => $password,
+            'protocol' => $secure ? 'ftps' : 'ftp',
+        ]);
 
-        if ($connection === false) {
-            return self::error(
-                'Keine Verbindung zu ' . $host . ':' . $port . '.'
-                . ($secure ? ' Unterstützt der Anbieter FTP mit Verschlüsselung?' : ''),
-                true
-            );
+        if (is_string($ftp)) {
+            return self::error($ftp, true);
         }
 
-        if (!@ftp_login($connection, (string) $target['username'], $password)) {
-            @ftp_close($connection);
-            return self::error('Anmeldung abgelehnt. Bitte Benutzername und Passwort prüfen.', false);
+        $wurzel = self::cleanPath((string) $target['remote_path']);
+        $angelegt = [];
+        $begonnen = microtime(true);
+        $fertig = 0;
+        $gesamt = count($files);
+
+        try {
+            foreach ($files as $relativ) {
+                if (microtime(true) - $begonnen > $budget) {
+                    return self::error(sprintf(
+                        'Zeit abgelaufen nach %d von %d Dateien. Der Auftrag wird fortgesetzt.',
+                        $fertig,
+                        $gesamt
+                    ), true);
+                }
+
+                $fern = $wurzel . '/' . $relativ;
+                $ordner = dirname($fern);
+
+                if (!isset($angelegt[$ordner])) {
+                    $ftp->ordnerSicherstellen($ordner);
+                    $angelegt[$ordner] = true;
+                }
+
+                $strom = @fopen($source . '/' . $relativ, 'rb');
+
+                if ($strom === false) {
+                    return self::error('Die Datei ' . $relativ . ' liess sich nicht lesen.', false);
+                }
+
+                $ok = $ftp->schreiben($fern, $strom);
+                fclose($strom);
+
+                if (!$ok) {
+                    return self::error(
+                        'Die Datei ' . $relativ . ' liess sich nicht schreiben'
+                        . ($ftp->fehler() !== '' ? ' (' . $ftp->fehler() . ')' : '')
+                        . '. Stimmt das Zielverzeichnis, und ist genug Platz frei?',
+                        true
+                    );
+                }
+
+                $fertig++;
+
+                if ($onProgress !== null) {
+                    $onProgress($fertig, $gesamt, $relativ);
+                }
+            }
+        } finally {
+            $ftp->schliessen();
         }
 
-        // Fast alle Hosting-Anbieter brauchen den passiven Modus.
-        @ftp_pasv($connection, true);
-
-        // Und manche nennen darin eine interne Adresse, weil sie hinter
-        // NAT stehen - auf geteiltem Hosting eher Regel als Ausnahme.
-        // Der Verbindungsversuch geht dann an eine Adresse, die es von
-        // hier aus nicht gibt, und das sieht aus wie eine Zeitueber-
-        // schreitung. Merkt man an einer Auflistung, die leer bleibt,
-        // obwohl die Anmeldung sass.
-        if (defined('FTP_USEPASVADDRESS') && @ftp_nlist($connection, '.') === false) {
-            @ftp_set_option($connection, FTP_USEPASVADDRESS, false);
-        }
-
-        $remoteRoot = self::cleanPath((string) $target['remote_path']);
-        $created = [];
-        $started = microtime(true);
-        $done = 0;
-
-        foreach ($files as $relative) {
-            if (microtime(true) - $started > $budget) {
-                @ftp_close($connection);
-                return self::error(
-                    sprintf('Zeit abgelaufen nach %d von %d Dateien. Der Auftrag wird fortgesetzt.', $done, count($files)),
-                    true
-                );
-            }
-
-            $remote = $remoteRoot . '/' . $relative;
-            $directory = dirname($remote);
-
-            if (!isset($created[$directory])) {
-                self::ensureRemoteDir($connection, $directory);
-                $created[$directory] = true;
-            }
-
-            if (!@ftp_put($connection, $remote, $source . '/' . $relative, FTP_BINARY)) {
-                @ftp_close($connection);
-                return self::error(
-                    'Die Datei ' . $relative . ' liess sich nicht schreiben. '
-                    . 'Stimmt das Zielverzeichnis, und ist genug Platz frei?',
-                    true
-                );
-            }
-
-            $done++;
-            if ($onProgress !== null) {
-                $onProgress($done, count($files), $relative);
-            }
-        }
-
-        @ftp_close($connection);
-
-        return ['ok' => true, 'files' => $done, 'error' => '', 'retryable' => false, 'verified' => false, 'url' => ''];
+        return ['ok' => true, 'files' => $fertig, 'error' => '',
+                'retryable' => false, 'verified' => false, 'url' => ''];
     }
 
     // ------------------------------------------------------------------
@@ -392,7 +377,7 @@ final class FtpDeployer
      *
      * @return array{dateien:array<int, array{index:int, ziel:string, bytes:int}>, error:string, stamm:string}
      */
-    private static function archivPlan(\ZipArchive $zip): array
+    public static function archivPlan(\ZipArchive $zip): array
     {
         $roh = [];
 
@@ -520,10 +505,6 @@ final class FtpDeployer
         return $stamm;
     }
 
-    /**
-     * @param array{dateien:array<int, array{index:int, ziel:string, bytes:int}>} $plan
-     * @return array{ok:bool, files:int, error:string, retryable:bool, verified:bool, url:string}
-     */
     private static function zipViaFtp(
         array $target,
         string $password,
@@ -533,34 +514,18 @@ final class FtpDeployer
         float $budget,
         bool $secure
     ): array {
-        if (!function_exists('ftp_connect')) {
-            return self::error('Dieser Server kann kein FTP.', false);
-        }
-
-        if ($secure && !function_exists('ftp_ssl_connect')) {
-            return self::error('Dieses PHP kann kein verschlüsseltes FTP (es fehlt OpenSSL).', false);
-        }
-
         $sauber = self::normalizeHost((string) $target['host'], (int) $target['port'] ?: 21);
 
-        $verbindung = $secure
-            ? @ftp_ssl_connect($sauber['host'], $sauber['port'], 20)
-            : @ftp_connect($sauber['host'], $sauber['port'], 20);
+        $ftp = Ftp::oeffnen([
+            'host' => $sauber['host'],
+            'port' => $sauber['port'],
+            'username' => (string) $target['username'],
+            'password' => $password,
+            'protocol' => $secure ? 'ftps' : 'ftp',
+        ]);
 
-        if ($verbindung === false) {
-            return self::error('Keine Verbindung zu ' . $sauber['host'] . '.', true);
-        }
-
-        if (!@ftp_login($verbindung, (string) $target['username'], $password)) {
-            @ftp_close($verbindung);
-
-            return self::error('Anmeldung abgelehnt. Bitte Benutzername und Passwort prüfen.', false);
-        }
-
-        @ftp_pasv($verbindung, true);
-
-        if (defined('FTP_USEPASVADDRESS') && @ftp_nlist($verbindung, '.') === false) {
-            @ftp_set_option($verbindung, FTP_USEPASVADDRESS, false);
+        if (is_string($ftp)) {
+            return self::error($ftp, true);
         }
 
         $wurzel = self::cleanPath((string) $target['remote_path']);
@@ -569,57 +534,53 @@ final class FtpDeployer
         $fertig = 0;
         $gesamt = count($plan['dateien']);
 
-        foreach ($plan['dateien'] as $datei) {
-            if (microtime(true) - $begonnen > $budget) {
-                @ftp_close($verbindung);
+        try {
+            foreach ($plan['dateien'] as $datei) {
+                if (microtime(true) - $begonnen > $budget) {
+                    return self::error(sprintf(
+                        'Zeit abgelaufen nach %d von %d Dateien. Der Auftrag wird fortgesetzt.',
+                        $fertig,
+                        $gesamt
+                    ), true);
+                }
 
-                return self::error(sprintf(
-                    'Zeit abgelaufen nach %d von %d Dateien. Der Auftrag wird fortgesetzt.',
-                    $fertig,
-                    $gesamt
-                ), true);
+                $fern = $wurzel . '/' . $datei['ziel'];
+                $ordner = dirname($fern);
+
+                if (!isset($angelegt[$ordner])) {
+                    $ftp->ordnerSicherstellen($ordner);
+                    $angelegt[$ordner] = true;
+                }
+
+                // Direkt aus dem Archiv in die Leitung - ohne Umweg ueber
+                // die eigene Festplatte.
+                $strom = $zip->getStreamIndex($datei['index']);
+
+                if ($strom === false) {
+                    return self::error('Die Datei ' . $datei['ziel'] . ' liess sich nicht lesen.', false);
+                }
+
+                $ok = $ftp->schreiben($fern, $strom);
+                fclose($strom);
+
+                if (!$ok) {
+                    return self::error(
+                        'Die Datei ' . $datei['ziel'] . ' liess sich nicht schreiben'
+                        . ($ftp->fehler() !== '' ? ' (' . $ftp->fehler() . ')' : '')
+                        . '. Stimmt das Zielverzeichnis, und ist genug Platz frei?',
+                        true
+                    );
+                }
+
+                $fertig++;
+
+                if ($onProgress !== null) {
+                    $onProgress($fertig, $gesamt, $datei['ziel']);
+                }
             }
-
-            $fern = $wurzel . '/' . $datei['ziel'];
-            $ordner = dirname($fern);
-
-            if (!isset($angelegt[$ordner])) {
-                self::ensureRemoteDir($verbindung, $ordner);
-                $angelegt[$ordner] = true;
-            }
-
-            // Direkt aus dem Archiv in die Leitung - ohne Umweg über
-            // die eigene Festplatte.
-            $strom = $zip->getStreamIndex($datei['index']);
-
-            if ($strom === false) {
-                @ftp_close($verbindung);
-
-                return self::error('Die Datei ' . $datei['ziel'] . ' liess sich nicht lesen.', false);
-            }
-
-            $ok = @ftp_fput($verbindung, $fern, $strom, FTP_BINARY);
-
-            fclose($strom);
-
-            if (!$ok) {
-                @ftp_close($verbindung);
-
-                return self::error(
-                    'Die Datei ' . $datei['ziel'] . ' liess sich nicht schreiben. '
-                    . 'Stimmt das Zielverzeichnis, und ist genug Platz frei?',
-                    true
-                );
-            }
-
-            $fertig++;
-
-            if ($onProgress !== null) {
-                $onProgress($fertig, $gesamt, $datei['ziel']);
-            }
+        } finally {
+            $ftp->schliessen();
         }
-
-        @ftp_close($verbindung);
 
         return ['ok' => true, 'files' => $fertig, 'error' => '',
                 'retryable' => false, 'verified' => false, 'url' => ''];
@@ -779,7 +740,6 @@ final class FtpDeployer
         }
     }
 
-    /** @return array{ok:bool, files:int, bytes:int, error:string, abgeschnitten:bool} */
     private static function treeViaFtp(
         array $target,
         string $password,
@@ -789,42 +749,28 @@ final class FtpDeployer
         ?callable $onProgress,
         bool $verschluesselt
     ): array {
-        if (!function_exists('ftp_connect')) {
-            return self::baumFehler('Dieser Server kann kein FTP.');
-        }
-
-        if ($verschluesselt && !function_exists('ftp_ssl_connect')) {
-            return self::baumFehler('Dieses PHP kann kein verschluesseltes FTP.');
-        }
-
         $sauber = self::normalizeHost((string) $target['host'], (int) $target['port'] ?: 21);
 
-        $verbindung = $verschluesselt
-            ? @ftp_ssl_connect($sauber['host'], $sauber['port'], 20)
-            : @ftp_connect($sauber['host'], $sauber['port'], 20);
+        $ftp = Ftp::oeffnen([
+            'host' => $sauber['host'],
+            'port' => $sauber['port'],
+            'username' => (string) $target['username'],
+            'password' => $password,
+            'protocol' => $verschluesselt ? 'ftps' : 'ftp',
+        ]);
 
-        if ($verbindung === false) {
-            return self::baumFehler('Keine Verbindung zu ' . $sauber['host'] . '.');
-        }
-
-        if (!@ftp_login($verbindung, (string) $target['username'], $password)) {
-            @ftp_close($verbindung);
-
-            return self::baumFehler('Die Anmeldung wurde abgelehnt.');
-        }
-
-        @ftp_pasv($verbindung, true);
-
-        if (defined('FTP_USEPASVADDRESS') && @ftp_nlist($verbindung, '.') === false) {
-            @ftp_set_option($verbindung, FTP_USEPASVADDRESS, false);
+        if (is_string($ftp)) {
+            return self::baumFehler($ftp);
         }
 
         $stand = self::neuerStand();
         $ende = microtime(true) + $budget;
 
-        self::ftpEinsammeln($verbindung, $wurzel, '', $zip, $stand, $ende, 0, $onProgress);
-
-        @ftp_close($verbindung);
+        try {
+            self::ftpEinsammeln($ftp, $wurzel, '', $zip, $stand, $ende, 0, $onProgress);
+        } finally {
+            $ftp->schliessen();
+        }
 
         return self::baumErgebnis($stand);
     }
@@ -835,7 +781,7 @@ final class FtpDeployer
      * @param array<string, mixed> $stand
      */
     private static function ftpEinsammeln(
-        $verbindung,
+        Ftp $ftp,
         string $wurzel,
         string $unterPfad,
         \ZipArchive $zip,
@@ -849,12 +795,14 @@ final class FtpDeployer
         }
 
         $voll = rtrim($wurzel . '/' . $unterPfad, '/');
-        $eintraege = @ftp_nlist($verbindung, $voll === '' ? '/' : $voll);
+        $eintraege = $ftp->liste($voll === '' ? '/' : $voll);
 
-        if (!is_array($eintraege)) {
-            // Ein Verzeichnis, das sich nicht auflisten laesst, ist
-            // eine Auskunft und kein Nichts. Ohne diese Notiz saehe ein
-            // gesperrter Ordner aus wie ein leerer.
+        if ($eintraege === null) {
+            // Ein Verzeichnis, das sich nicht auflisten laesst, ist eine
+            // Auskunft und kein Nichts. Ohne diese Notiz saehe ein
+            // gesperrter Ordner aus wie ein leerer - und seit die Liste
+            // zwischen "leer" und "ging nicht" unterscheidet, ist das
+            // sauber zu haben.
             $stand['abgeschnitten'] = true;
 
             return;
@@ -862,14 +810,12 @@ final class FtpDeployer
 
         $ordner = [];
 
-        foreach ($eintraege as $eintrag) {
+        foreach ($eintraege as $name) {
             if (!self::baumDarfWeiter($stand, $ende)) {
                 return;
             }
 
-            $name = basename((string) $eintrag);
-
-            if ($name === '' || $name === '.' || $name === '..' || str_contains($name, '..')) {
+            if ($name === '' || str_contains($name, '..')) {
                 continue;
             }
 
@@ -881,10 +827,10 @@ final class FtpDeployer
 
             $fern = $voll . '/' . $name;
 
-            // ftp_size gibt bei einem Verzeichnis -1 zurueck. Das ist
-            // die Unterscheidung, die ueber blankes FTP zu haben ist -
+            // Eine Groesse von -1 heisst Verzeichnis. Das ist die
+            // Unterscheidung, die ueber blankes FTP zu haben ist -
             // ftp_mlsd gibt es nicht ueberall.
-            $groesse = @ftp_size($verbindung, $fern);
+            $groesse = $ftp->groesse($fern);
 
             if ($groesse < 0) {
                 $ordner[] = $relativ;
@@ -906,7 +852,19 @@ final class FtpDeployer
                 continue;
             }
 
-            if (@ftp_get($verbindung, $tmp, $fern, FTP_BINARY)) {
+            $ziel = @fopen($tmp, 'w+b');
+
+            if ($ziel === false) {
+                @unlink($tmp);
+                $stand['abgeschnitten'] = true;
+
+                continue;
+            }
+
+            $ok = $ftp->lesen($fern, $ziel);
+            fclose($ziel);
+
+            if ($ok) {
                 $zip->addFile($tmp, $relativ);
 
                 // Die Datei muss bis zum close() des Archivs liegen
@@ -926,7 +884,7 @@ final class FtpDeployer
         }
 
         foreach ($ordner as $relativ) {
-            self::ftpEinsammeln($verbindung, $wurzel, $relativ, $zip, $stand, $ende, $tiefe + 1, $onProgress);
+            self::ftpEinsammeln($ftp, $wurzel, $relativ, $zip, $stand, $ende, $tiefe + 1, $onProgress);
         }
     }
 
@@ -1123,7 +1081,11 @@ final class FtpDeployer
         return $out;
     }
 
-    /** @return array<string, string> */
+    /**
+     * Einen Ordner vom Kundenserver in den Speicher holen.
+     *
+     * @return array<string, string>
+     */
     private static function fetchViaFtp(
         array $target,
         string $password,
@@ -1131,89 +1093,58 @@ final class FtpDeployer
         float $budget,
         bool $secure
     ): array {
-        if (!function_exists('ftp_connect')) {
-            return [];
-        }
-
         $sauber = self::normalizeHost((string) $target['host'], (int) $target['port'] ?: 21);
-        $host = $sauber['host'];
-        $port = $sauber['port'];
 
-        $connection = $secure ? @ftp_ssl_connect($host, $port, 20) : @ftp_connect($host, $port, 20);
+        $ftp = Ftp::oeffnen([
+            'host' => $sauber['host'],
+            'port' => $sauber['port'],
+            'username' => (string) $target['username'],
+            'password' => $password,
+            'protocol' => $secure ? 'ftps' : 'ftp',
+        ]);
 
-        if ($connection === false) {
+        if (is_string($ftp)) {
             return [];
         }
 
-        if (!@ftp_login($connection, (string) $target['username'], $password)) {
-            @ftp_close($connection);
-            return [];
+        $raus = [];
+        $begonnen = microtime(true);
+
+        try {
+            foreach ($ftp->liste($remote) ?? [] as $name) {
+                if (microtime(true) - $begonnen > $budget || count($raus) >= self::MAX_FETCH_FILES) {
+                    break;
+                }
+
+                if ($name === '' || str_contains($name, '..')) {
+                    continue;
+                }
+
+                $groesse = $ftp->groesse($remote . '/' . $name);
+
+                // -1 heisst: kein Groessenwert - meistens ein Unterordner.
+                if ($groesse < 0 || $groesse > self::MAX_FETCH_BYTES) {
+                    continue;
+                }
+
+                $strom = fopen('php://temp', 'r+');
+
+                if ($strom === false) {
+                    continue;
+                }
+
+                if ($ftp->lesen($remote . '/' . $name, $strom)) {
+                    rewind($strom);
+                    $raus[$name] = (string) stream_get_contents($strom);
+                }
+
+                fclose($strom);
+            }
+        } finally {
+            $ftp->schliessen();
         }
 
-        @ftp_pasv($connection, true);
-
-        $out = [];
-        $started = microtime(true);
-        $names = @ftp_nlist($connection, $remote);
-
-        // Leere Antwort trotz sitzender Anmeldung: fast immer eine
-        // interne Adresse aus dem Passivmodus. Einmal ohne sie.
-        if ($names === false && defined('FTP_USEPASVADDRESS')) {
-            @ftp_set_option($connection, FTP_USEPASVADDRESS, false);
-            $names = @ftp_nlist($connection, $remote);
-        }
-
-        foreach (is_array($names) ? $names : [] as $entry) {
-            if (microtime(true) - $started > $budget || count($out) >= self::MAX_FETCH_FILES) {
-                break;
-            }
-
-            $name = basename((string) $entry);
-
-            if ($name === '' || $name === '.' || $name === '..' || str_contains($name, '..')) {
-                continue;
-            }
-
-            $size = @ftp_size($connection, $remote . '/' . $name);
-
-            // -1 heisst: kein Grössenwert – meistens ein Unterordner.
-            if ($size < 0 || $size > self::MAX_FETCH_BYTES) {
-                continue;
-            }
-
-            $stream = fopen('php://temp', 'r+');
-
-            if ($stream === false) {
-                continue;
-            }
-
-            if (@ftp_fget($connection, $stream, $remote . '/' . $name, FTP_BINARY)) {
-                rewind($stream);
-                $out[$name] = (string) stream_get_contents($stream);
-            }
-
-            fclose($stream);
-        }
-
-        @ftp_close($connection);
-
-        return $out;
-    }
-
-    /** Verzeichnisse Stück für Stück anlegen. */
-    private static function ensureRemoteDir($connection, string $path): void
-    {
-        $parts = array_filter(explode('/', trim($path, '/')));
-        $current = '';
-
-        foreach ($parts as $part) {
-            $current .= '/' . $part;
-            if (@ftp_chdir($connection, $current)) {
-                continue;
-            }
-            @ftp_mkdir($connection, $current);
-        }
-        @ftp_chdir($connection, '/');
+        return $raus;
     }
 
     // ------------------------------------------------------------------
@@ -1639,7 +1570,7 @@ final class FtpDeployer
         // Dieselbe Unterscheidung wie bei FTP: false heisst gescheitert,
         // ein leeres Feld heisst leer.
         $roh = $sftp->nlist($daHeim);
-        $inhalt = ['gelesen' => $roh !== false, 'namen' => self::nurNamen((array) ($roh ?: []))];
+        $inhalt = ['gelesen' => $roh !== false, 'namen' => Ftp::nurNamen((array) ($roh ?: []))];
         $obenAuf = $inhalt['namen'];
 
         $stufen[] = self::stufe(
@@ -1693,7 +1624,18 @@ final class FtpDeployer
         );
     }
 
-    /** @return array{ok:bool, message:string, stufen:array<int, array{name:string, ok:bool, info:string}>, ordner:array<int,string>, vorschlag:string} */
+    /**
+     * Der FTP-Zweig des Tests - jetzt nur noch ein Adapter.
+     *
+     * Die acht Stufen sind weg. Sie sollten die Ursache zeigen, haben
+     * sie aber laufend verwechselt: ein leerer Ordner als Netzfehler,
+     * ein "gibt es nicht" ueber einem 250 Ok, gruen ueber rot. Was
+     * bleibt, ist ein Satz - und darunter, was tatsaechlich gemessen
+     * wurde. Erhoben von Ftp::pruefen(), das nach jedem Fehlschlag neu
+     * verbindet, statt auf einer verdorbenen Leitung weiterzufragen.
+     *
+     * @return array{ok:bool, message:string, details:array<int,string>, stufen:array<int, array{name:string, ok:bool, info:string}>, ordner:array<int,string>, vorschlag:string, vorschlagHost:string}
+     */
     private static function testFtp(
         string $host,
         int $port,
@@ -1703,219 +1645,78 @@ final class FtpDeployer
         bool $verschluesselt,
         array $stufen = []
     ): array {
-        if (!function_exists('ftp_connect')) {
-            $meldung = 'Dieser Server kann kein FTP - die passende PHP-Erweiterung ist nicht '
-                . 'eingebaut. Stelle im Formular auf SFTP um (Port 22). Das bringt '
-                . 'WebAtze selbst mit und ist ausserdem verschluesselt.';
-            $stufen[] = self::stufe('Verbindung', false, $meldung);
+        $zugang = [
+            'host' => $host,
+            'port' => $port,
+            'username' => $user,
+            'password' => $password,
+            'protocol' => $verschluesselt ? 'ftps' : 'ftp',
+        ];
 
-            return self::pruefErgebnis(false, $meldung, [], '', $stufen);
+        $ergebnis = Ftp::pruefen($zugang + ['path' => $pfad]);
+
+        // Ordnervorschlaege erst jetzt, und nur wenn sie gebraucht
+        // werden: Das Erkunden probiert Pfade durch, die es meist nicht
+        // gibt. Vorher lief es davor und hat das Urteil zerstoert, das
+        // es stuetzen sollte.
+        $ordner = [];
+        $vorschlag = '';
+
+        if (!$ergebnis['ok']) {
+            $ftp = Ftp::oeffnen($zugang);
+
+            if (!is_string($ftp)) {
+                $daheim = $ftp->hier();
+                $oben = $ftp->liste($daheim) ?? [];
+                $ordner = self::ordnerSuchen($ftp, $pfad, $daheim);
+                $vorschlag = self::ordnerVorschlag($oben, $daheim, $user);
+                $ftp->schliessen();
+            }
         }
 
-        // Ohne diese Pruefung ist ein PHP ohne OpenSSL kein Fehler,
-        // den man melden kann, sondern ein Absturz.
-        if ($verschluesselt && !function_exists('ftp_ssl_connect')) {
-            $meldung = 'Dieses PHP kann kein verschluesseltes FTP (es fehlt OpenSSL). '
-                . 'Stelle auf einfaches FTP um oder - besser - auf SFTP.';
-            $stufen[] = self::stufe('Verbindung', false, $meldung);
+        return [
+            'ok' => $ergebnis['ok'],
+            'message' => $ergebnis['satz'],
+            'details' => $ergebnis['details'],
+            'stufen' => $stufen,
+            'ordner' => self::aufraeumen($ordner),
+            'vorschlag' => $vorschlag !== '' ? $vorschlag : self::vorschlagen($ordner, $pfad),
+            'vorschlagHost' => '',
+        ];
+    }
 
-            return self::pruefErgebnis(false, $meldung, [], '', $stufen);
-        }
+    /**
+     * Wo koennte der Zielordner sonst liegen?
+     *
+     * Laeuft nur noch, wenn der eingetragene Pfad nicht stimmt - und auf
+     * einer eigenen Verbindung, damit ein Fehlversuch nichts mehr
+     * beschaedigt, das schon gemessen wurde.
+     *
+     * @return array<int, string>
+     */
+    private static function ordnerSuchen(Ftp $ftp, string $pfad, string $daheim): array
+    {
+        $gefunden = [];
 
-        $port = $port ?: 21;
+        foreach (self::suchorte($pfad, $daheim) as $ort) {
+            $namen = $ftp->liste($ort);
 
-        $verbindung = $verschluesselt
-            ? @ftp_ssl_connect($host, $port, 15)
-            : @ftp_connect($host, $port, 15);
-
-        if ($verbindung === false) {
-            $meldung = 'Der Servername stimmt, aber auf Port ' . $port . ' antwortet nichts. '
-                . ($port === 22
-                    ? 'Port 22 ist SSH - fuer FTP ist es 21.'
-                    : 'Ist der Port richtig? FTP ist 21, FTP mit Verschluesselung meist auch 21, SFTP ist 22.');
-            $stufen[] = self::stufe('Verbindung', false, $meldung);
-
-            return self::pruefErgebnis(false, $meldung, [], '', $stufen);
-        }
-
-        $stufen[] = self::stufe('Verbindung', true, 'Port ' . $port . ' antwortet.');
-
-        if (!@ftp_login($verbindung, $user, $password)) {
-            @ftp_close($verbindung);
-
-            $meldung = self::anmeldeHilfe($user);
-            $stufen[] = self::stufe('Anmeldung', false, $meldung);
-
-            return self::pruefErgebnis(false, $meldung, [], '', $stufen);
-        }
-
-        $stufen[] = self::stufe('Anmeldung', true, 'Benutzer ' . $user . ' angenommen.');
-
-        $passiv = @ftp_pasv($verbindung, true);
-        $stufen[] = self::stufe(
-            'Passivmodus',
-            (bool) $passiv,
-            $passiv
-                ? 'Passivmodus aktiv - das ist der Modus, der durch Firewalls kommt.'
-                : 'Der Server lehnt den Passivmodus ab. Ohne ihn scheitert jede Uebertragung.'
-        );
-
-        $daHeim = (string) (@ftp_pwd($verbindung) ?: '/');
-        $stufen[] = self::stufe('Startordner', true, 'Nach der Anmeldung stehst du in ' . $daHeim . '.');
-
-        $inhalt = self::inhaltOben($verbindung, $daHeim);
-
-        /**
-         * Nach einem gescheiterten Datentransfer ist die Leitung hin.
-         *
-         * Nachgemessen gegen einen echten FTPS-Server: Bricht eine
-         * Uebertragung ab, liegt der Steuerkanal danach um eine Antwort
-         * versetzt. ftp_chdir bekommt das "226 Fertig" des vorigen
-         * Befehls und meldet false, ftp_pwd bekommt das "250 Ok" von
-         * chdir und meldet false. Jede Stufe nach dem ersten Fehlschlag
-         * war damit erfunden - der Zielordner "gibt es nicht", obwohl
-         * der Server ihn zwei Zeilen weiter mit 250 bestaetigt hatte.
-         *
-         * Ohne Verschluesselung tritt das nicht auf; mit ist es der
-         * Normalfall, weil viele FTP-Server die Datenverbindung ohne
-         * sauberen TLS-Abschluss schliessen.
-         *
-         * Also: ab hier auf einer frischen Leitung weiterarbeiten.
-         */
-        if (!$inhalt['gelesen']) {
-            $neu = self::neueLeitung($verbindung, $host, $port, $user, $password, $verschluesselt);
-
-            if ($neu === null) {
-                $stufen[] = self::stufe('Inhalt lesen', false, self::inhaltMeldung($inhalt, $daHeim));
-                $stufen[] = self::stufe('Neue Leitung', false,
-                    'Nach dem Fehlschlag liess sich keine zweite Verbindung aufbauen. '
-                    . 'Mehr laesst sich von hier aus nicht feststellen.');
-
-                return self::pruefErgebnis(false, self::inhaltMeldung($inhalt, $daHeim), [], '', $stufen);
+            if ($namen === null) {
+                continue;
             }
 
-            $verbindung = $neu;
+            $gefunden[] = $ort;
 
-            // Meldet der Server im Passivmodus eine interne Adresse - auf
-            // geteiltem Hosting hinter NAT die Regel -, laeuft die
-            // Datenverbindung ins Leere. Dann noch einmal, mit der
-            // Adresse, die wir kennen. Auf der frischen Leitung.
-            if (defined('FTP_USEPASVADDRESS')) {
-                @ftp_set_option($verbindung, FTP_USEPASVADDRESS, false);
-                $zweiter = self::inhaltOben($verbindung, $daHeim);
+            foreach ($namen as $name) {
+                $tief = rtrim($ort, '/') . '/' . $name;
 
-                if ($zweiter['gelesen']) {
-                    $inhalt = $zweiter;
-                    $stufen[] = self::stufe(
-                        'Passivadresse',
-                        true,
-                        'Der Server nannte im Passivmodus eine interne Adresse. '
-                        . 'Ich habe stattdessen die bekannte verwendet - das ist beim '
-                        . 'Hochladen genauso noetig.'
-                    );
-                } else {
-                    $verbindung = self::neueLeitung($verbindung, $host, $port, $user, $password, $verschluesselt)
-                        ?? $verbindung;
+                if ($ftp->wechseln($tief)) {
+                    $gefunden[] = $tief;
                 }
             }
         }
 
-        $obenAuf = $inhalt['namen'];
-
-        $stufen[] = self::stufe(
-            'Inhalt lesen',
-            $inhalt['gelesen'],
-            self::inhaltMeldung($inhalt, $daHeim)
-        );
-
-        // Ist das Lesen gescheitert, wird jetzt genau nachgesehen, woran.
-        //
-        // "Meist eine blockierte Datenverbindung" ist eine Vermutung, und
-        // mit einer Vermutung geht man nicht zum Hoster. Die naechste
-        // Stufe fragt den Server selbst: Welche Adresse und welchen Port
-        // nennt er im Passivmodus, und was passiert, wenn man dort
-        // anklopft? Abgewiesen, keine Antwort oder offen - drei
-        // verschiedene Ursachen mit drei verschiedenen Zustaendigkeiten.
-        if (!$inhalt['gelesen']) {
-            $stufen[] = self::datenStufe($verbindung, $host, $port);
-            $stufen[] = self::merkmalStufe($verbindung, $verschluesselt);
-        }
-
-        /**
-         * Erst fragen, was zaehlt - erkundet wird ganz zuletzt.
-         *
-         * Vorher stand das Erkunden hier oben, und es hat den Test
-         * ueber verschluesselte Verbindungen zuverlaessig ruiniert:
-         * verzeichnisseFtp probiert der Reihe nach Pfade durch, die es
-         * meist nicht gibt. Jeder Fehlversuch bricht eine Datenver-
-         * bindung ab, und danach liegt der Steuerkanal um eine Antwort
-         * versetzt (gemessen). Die naechste Frage - "gibt es den
-         * Zielordner?" - bekam dann die Antwort der vorletzten und
-         * meldete "gibt es nicht", waehrend der Server zwei Zeilen
-         * weiter unten "250 Ok" gesagt hatte.
-         *
-         * Also: chdir und Schreibprobe zuerst, auf der unversehrten
-         * Leitung. Das Erkunden kommt danach, auf einer frischen - und
-         * nur dann, wenn es etwas vorzuschlagen gibt.
-         */
-        $vorhanden = @ftp_chdir($verbindung, $pfad);
-
-        $stufen[] = self::stufe(
-            'Zielordner',
-            (bool) $vorhanden,
-            $vorhanden
-                ? $pfad . ' ist vorhanden.'
-                : $pfad . ' gibt es von diesem Zugang aus nicht.'
-        );
-
-        // Die Schreibprobe ist eine eigene Frage und darf das Urteil
-        // ueber den Ordner nicht ueberschreiben.
-        //
-        // Genau das tat sie: $vorhanden wurde mit dem Ergebnis der
-        // Schreibprobe ueberschrieben, und dann meldete die
-        // Zusammenfassung "den Ordner gibt es nicht" - obwohl die Stufe
-        // darueber gruen war und der Ordner sehr wohl da. Eine Meldung,
-        // die der Stufenkette direkt widerspricht, ist schlimmer als
-        // gar keine: Man sucht dann an der falschen Stelle.
-        $schreibbar = null;
-
-        if ($vorhanden) {
-            $schreibbar = self::schreibprobeFtp($verbindung, $pfad);
-
-            $stufen[] = self::stufe(
-                'Schreibprobe',
-                $schreibbar,
-                $schreibbar
-                    ? 'Datei angelegt und wieder entfernt - der Zugang darf schreiben.'
-                    : self::schreibHilfe($pfad)
-            );
-        }
-
-        // Jetzt erst erkunden - und nur, wenn ein Vorschlag gebraucht
-        // wird. Steht der Ordner, ist die Liste nur Beiwerk und das
-        // Risiko einer zerschossenen Leitung nicht wert.
-        $ordner = [];
-
-        if (!$vorhanden) {
-            $frisch = self::neueLeitung($verbindung, $host, $port, $user, $password, $verschluesselt);
-
-            if ($frisch !== null) {
-                $verbindung = $frisch;
-                $ordner = self::verzeichnisseFtp($verbindung, $pfad, $daHeim);
-            }
-        }
-
-        @ftp_close($verbindung);
-
-        $vorschlag = $vorhanden ? '' : self::ordnerVorschlag($obenAuf, $daHeim, $user);
-
-        return self::pruefErgebnis(
-            (bool) $vorhanden,
-            self::endMeldung((bool) $vorhanden, $schreibbar, $pfad, $vorschlag, $user),
-            $ordner,
-            $vorschlag !== '' ? $vorschlag : self::vorschlagen($ordner, $pfad),
-            $stufen
-        );
+        return $gefunden;
     }
 
     /**
@@ -1963,428 +1764,6 @@ final class FtpDeployer
             . 'haeufiger durch.';
     }
 
-    /**
-     * Was im Startordner liegt - und ob wir ueberhaupt nachsehen konnten.
-     *
-     * Der Unterschied ist der ganze Punkt. Vorher stand hier eine
-     * Namensliste, und "leer" hiess damit dasselbe wie "gescheitert":
-     *
-     *     Inhalt lesen: Der Startordner liess sich nicht auflisten -
-     *     meist eine blockierte Datenverbindung.
-     *
-     * Genau das bekam ein frisch angelegter FTP-Zugang zu sehen, dessen
-     * Ordner fuer die neue Website noch leer war. Die Datenverbindung
-     * stand tadellos - die Schreibprobe zwei Stufen weiter unten lief ja
-     * durch -, aber die Meldung schickte ihn auf die Suche nach einer
-     * Firewall, die es nicht gab. Ein leerer Ordner ist der Normalfall,
-     * bevor die erste Website hochgeht.
-     *
-     * ftp_nlist gibt false zurueck, wenn die Datenverbindung scheitert,
-     * und ein leeres Feld, wenn der Ordner leer ist. Manche Server
-     * antworten auf einen leeren Ordner allerdings auch mit false -
-     * deshalb fragt ftp_rawlist noch einmal nach. Kommt von dort ein
-     * Feld, hat die Datenverbindung gestanden.
-     *
-     * @return array{gelesen:bool, namen:array<int, string>}
-     */
-    private static function inhaltOben($verbindung, string $heim): array
-    {
-        // Was PHP dabei bemaengelt, ist die halbe Diagnose: "SSL read
-        // failed" ist ein anderes Gespraech mit dem Hoster als
-        // "php_connect_nonb() failed". Ohne das Einfangen landet der
-        // Satz im Fehlerprotokoll des Servers - also dort, wo ihn
-        // niemand sucht.
-        $grund = '';
-        $sammeln = static function (int $n, string $text) use (&$grund): bool {
-            if ($grund === '') {
-                $grund = trim((string) preg_replace('/^ftp_\w+\(\):\s*/', '', $text));
-            }
-
-            return true;
-        };
-
-        set_error_handler($sammeln);
-
-        try {
-            $roh = ftp_nlist($verbindung, $heim);
-
-            // Manche Server antworten auf NLST in einem leeren Ordner mit
-            // einem Fehler statt mit einer leeren Liste. LIST fragt
-            // dasselbe noch einmal anders.
-            if ($roh === false) {
-                $roh = self::ausRohzeilen(ftp_rawlist($verbindung, $heim));
-            }
-        } finally {
-            restore_error_handler();
-        }
-
-        if ($roh === false) {
-            return ['gelesen' => false, 'namen' => [], 'grund' => $grund];
-        }
-
-        return ['gelesen' => true, 'namen' => self::nurNamen((array) $roh), 'grund' => ''];
-    }
-
-    /**
-     * Eine frische Leitung, weil die alte nichts mehr taugt.
-     *
-     * Aufgemacht wird genau wie beim ersten Mal - dieselben Angaben,
-     * derselbe Passivmodus. Geht das nicht, gibt es null; dann ist auch
-     * nichts mehr zu messen.
-     *
-     * @return resource|\FTP\Connection|null
-     */
-    private static function neueLeitung(
-        $alt,
-        string $host,
-        int $port,
-        string $user,
-        string $password,
-        bool $verschluesselt
-    ) {
-        // Dieselbe Wache wie beim ersten Verbinden. Ohne die FTP-
-        // Erweiterung ist ein Aufruf hier kein Fehler, den man melden
-        // kann, sondern ein Absturz - und ein privater Helfer soll sich
-        // nicht darauf verlassen, dass der Aufrufer schon nachgesehen hat.
-        if (!function_exists('ftp_connect')) {
-            return null;
-        }
-
-        if ($verschluesselt && !function_exists('ftp_ssl_connect')) {
-            return null;
-        }
-
-        @ftp_close($alt);
-
-        $neu = $verschluesselt
-            ? @ftp_ssl_connect($host, $port, 15)
-            : @ftp_connect($host, $port, 15);
-
-        if ($neu === false) {
-            return null;
-        }
-
-        if (!@ftp_login($neu, $user, $password)) {
-            @ftp_close($neu);
-
-            return null;
-        }
-
-        @ftp_pasv($neu, true);
-
-        return $neu;
-    }
-
-    /**
-     * Die Datenverbindung von Hand aufbauen und berichten, was passiert.
-     *
-     * ftp_nlist sagt nur "false". Das ist zu wenig, um jemanden damit
-     * zum Hoster zu schicken. Also PASV selbst schicken, die genannte
-     * Adresse auslesen und dort anklopfen. Was dabei herauskommt,
-     * benennt die Ursache:
-     *
-     *   verbunden       - der Weg steht; dann liegt es woanders
-     *   abgewiesen      - der Server hat den Port nicht geoeffnet
-     *   keine Antwort   - eine Firewall verschluckt die Pakete
-     *   interne Adresse - NAT: der Server nennt eine Adresse aus seinem
-     *                     eigenen Netz, die von aussen niemand erreicht
-     *
-     * @return array{name:string, ok:bool, info:string}
-     */
-    private static function datenStufe($verbindung, string $host, int $port): array
-    {
-        // Dreimal, nicht einmal.
-        //
-        // Ein einzelner Port kann zufaellig belegt sein - drei
-        // verschiedene aus demselben Bereich sind es nicht. Wenn alle
-        // drei in dieselbe Zeitueberschreitung laufen, ist der ganze
-        // Passivbereich zu, und genau das ist der Satz, den der Hoster
-        // nicht mehr wegdiskutieren kann.
-        $versuche = [];
-        $offen = null;
-
-        for ($i = 0; $i < 3; $i++) {
-            $versuch = self::passivProbe($verbindung, $host);
-
-            if ($versuch === null) {
-                break;
-            }
-
-            $versuche[] = $versuch;
-
-            if ($versuch['offen']) {
-                $offen = $versuch;
-                break;
-            }
-        }
-
-        if ($versuche === []) {
-            return self::stufe(
-                'Datenverbindung',
-                false,
-                'Der Server hat auf PASV nicht wie erwartet geantwortet.'
-            );
-        }
-
-        $adresse = $versuche[0]['adresse'];
-        $ports = implode(', ', array_map(static fn (array $v): string => (string) $v['port'], $versuche));
-        $intern = $versuche[0]['intern'];
-
-        $wo = 'Der Server nennt ' . $adresse
-            . (count($versuche) > 1 ? ', Ports ' . $ports : ':' . $versuche[0]['port']);
-
-        if ($intern) {
-            $wo .= ' - eine interne Adresse, von aussen nicht erreichbar. Geklopft habe ich '
-                . 'deshalb an ' . $host;
-        }
-
-        if ($offen !== null) {
-            return self::stufe(
-                'Datenverbindung',
-                true,
-                $wo . '. Auf Port ' . $offen['port'] . ' steht die Verbindung. Der Weg ist '
-                . 'also frei - dann liegt es nicht am Netz, sondern am Auflisten selbst.'
-            );
-        }
-
-        $abgewiesen = $versuche[0]['abgewiesen'];
-
-        return self::stufe(
-            'Datenverbindung',
-            false,
-            $wo . '. Keiner davon nimmt eine Verbindung an (' . $versuche[0]['text'] . '). '
-            . ($abgewiesen
-                ? 'Abgewiesen heisst: Der Server oeffnet den Port nicht.'
-                : 'Keine Antwort heisst: Die Pakete werden unterwegs verworfen, typisch fuer '
-                    . 'eine Firewall.')
-            . ' Port ' . $port . ' steht, ' . count($versuche) . ' Ports aus dem '
-            . 'Passivbereich stehen nicht - das kann nur der Hoster aendern.'
-        );
-    }
-
-    /**
-     * Einmal PASV schicken und an der genannten Stelle anklopfen.
-     *
-     * @return array{adresse:string, port:int, intern:bool, offen:bool, abgewiesen:bool, text:string}|null
-     */
-    private static function passivProbe($verbindung, string $host): ?array
-    {
-        $antwort = @ftp_raw($verbindung, 'PASV');
-        $zeile = trim((string) ($antwort[0] ?? ''));
-
-        if (!preg_match('/\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)/', $zeile, $t)) {
-            return null;
-        }
-
-        $adresse = $t[1] . '.' . $t[2] . '.' . $t[3] . '.' . $t[4];
-        $port = ((int) $t[5] << 8) + (int) $t[6];
-        $intern = self::internesNetz($adresse);
-
-        $fehler = 0;
-        $text = '';
-        $sock = @fsockopen($intern ? $host : $adresse, $port, $fehler, $text, 8.0);
-
-        if (is_resource($sock)) {
-            fclose($sock);
-
-            return ['adresse' => $adresse, 'port' => $port, 'intern' => $intern,
-                'offen' => true, 'abgewiesen' => false, 'text' => 'offen'];
-        }
-
-        // "Connection refused" heisst: da ist ein Rechner, aber kein
-        // offener Port. Eine Zeitueberschreitung heisst: die Pakete
-        // verschwinden unterwegs. Zwei verschiedene Gespraeche mit dem
-        // Hoster.
-        return [
-            'adresse' => $adresse,
-            'port' => $port,
-            'intern' => $intern,
-            'offen' => false,
-            'abgewiesen' => $fehler === 111 || stripos($text, 'refused') !== false,
-            'text' => $text !== '' ? $text : 'Zeitueberschreitung',
-        ];
-    }
-
-    /**
-     * Was der Server von sich aus anbietet (FEAT).
-     *
-     * Beantwortet nebenbei die Frage, die der Hoster offen liess: Kann
-     * dieses Konto ueberhaupt verschluesseltes FTP? Steht AUTH TLS in
-     * der Liste, ja - und dann ist ein Versuch damit sinnvoll.
-     *
-     * @return array{name:string, ok:bool, info:string}
-     */
-    private static function merkmalStufe($verbindung, bool $verschluesselt): array
-    {
-        $roh = (array) (@ftp_raw($verbindung, 'FEAT') ?: []);
-        $text = implode(' ', array_map('trim', $roh));
-
-        if ($text === '') {
-            return self::stufe('Server kann', true, 'Der Server beantwortet FEAT nicht.');
-        }
-
-        $tls = stripos($text, 'AUTH TLS') !== false || stripos($text, 'AUTH SSL') !== false;
-
-        if ($verschluesselt) {
-            return self::stufe('Server kann', true,
-                'Diese Verbindung laeuft bereits verschluesselt.'
-                . ($tls ? '' : ' Der Server fuehrt AUTH TLS allerdings nicht in seiner Liste.'));
-        }
-
-        return self::stufe(
-            'Server kann',
-            true,
-            $tls
-                ? 'Der Server bietet AUTH TLS an - „FTP mit Verschluesselung“ (Port 21) ist '
-                    . 'hier also moeglich und einen Versuch wert.'
-                : 'Der Server bietet kein AUTH TLS an - verschluesseltes FTP faellt hier weg.'
-        );
-    }
-
-    /** Adressen, die nur im eigenen Netz gelten. */
-    private static function internesNetz(string $ip): bool
-    {
-        return filter_var(
-            $ip,
-            FILTER_VALIDATE_IP,
-            FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
-        ) === false;
-    }
-
-    /**
-     * Aus den rohen Zeilen von LIST die Namen holen.
-     *
-     * Eine Zeile sieht aus wie
-     * "drwxr-xr-x 2 web web 4096 Sep 5 12:00 assets" - gebraucht wird
-     * nur das letzte Feld.
-     *
-     * @param array<int, string>|false $zeilen
-     * @return array<int, string>|false
-     */
-    private static function ausRohzeilen($zeilen)
-    {
-        if (!is_array($zeilen)) {
-            return false;
-        }
-
-        $namen = [];
-
-        foreach ($zeilen as $zeile) {
-            $zeile = trim((string) $zeile);
-
-            if ($zeile === '' || str_starts_with($zeile, 'total ')) {
-                continue;
-            }
-
-            $felder = preg_split('/\s+/', $zeile, 9);
-
-            $namen[] = (is_array($felder) && count($felder) === 9) ? $felder[8] : $zeile;
-        }
-
-        return $namen;
-    }
-
-    /**
-     * Aus Pfaden Namen machen, ohne "." und "..".
-     *
-     * @param array<int, mixed> $eintraege
-     * @return array<int, string>
-     */
-    private static function nurNamen(array $eintraege): array
-    {
-        $namen = [];
-
-        foreach ($eintraege as $eintrag) {
-            $name = basename((string) $eintrag);
-
-            if ($name !== '' && $name !== '.' && $name !== '..') {
-                $namen[] = $name;
-            }
-        }
-
-        return array_values(array_unique($namen));
-    }
-
-    /**
-     * Drei Faelle, drei Saetze - und nur einer davon ist ein Fehler.
-     *
-     * @param array{gelesen:bool, namen:array<int, string>} $inhalt
-     */
-    private static function inhaltMeldung(array $inhalt, string $heim): string
-    {
-        if (!$inhalt['gelesen']) {
-            $grund = (string) ($inhalt['grund'] ?? '');
-
-            // Der Wortlaut von PHP gehoert dazu. "SSL read failed" heisst
-            // etwas anderes als "php_connect_nonb() failed", und wer das
-            // an den Hoster weiterreicht, bekommt eine andere Antwort als
-            // auf "geht nicht".
-            $satz = 'Der Startordner liess sich nicht auflisten';
-
-            if ($grund !== '') {
-                $satz .= ' (' . $grund . ')';
-            }
-
-            if (stripos($grund, 'ssl') !== false || stripos($grund, 'tls') !== false) {
-                return $satz . '. Der Abbruch kommt aus der Verschluesselung, nicht aus '
-                    . 'dem Netz: Viele cPanel-Server verlangen, dass die Datenverbindung '
-                    . 'die TLS-Sitzung der Steuerverbindung wiederverwendet - das kann PHP '
-                    . 'nicht. Stell die Verbindungsart einmal auf „FTP“ ohne '
-                    . 'Verschluesselung um; laeuft es dann durch, war es genau das.';
-            }
-
-            return $satz . '. Die naechste Zeile sagt, woran es lag.';
-        }
-
-        if ($inhalt['namen'] === []) {
-            return $heim . ' ist leer - lesen liess er sich aber. Bei einem frisch '
-                . 'angelegten Ordner ist das genau richtig.';
-        }
-
-        return count($inhalt['namen']) . ' Eintraege im Startordner: '
-            . implode(', ', array_slice($inhalt['namen'], 0, 8));
-    }
-
-    /**
-     * Darf dieser Zugang dort wirklich schreiben?
-     *
-     * Ohne diese Probe heisst "gruen" nur, dass der Ordner existiert.
-     * Ein nur lesender Zugang faellt dann erst beim Hochladen auf - also
-     * genau dann, wenn es eilig ist.
-     */
-    private static function schreibprobeFtp($verbindung, string $pfad): bool
-    {
-        $name = '.webatze-probe-' . bin2hex(random_bytes(4));
-        $ziel = rtrim($pfad, '/') . '/' . $name;
-        $tmp = tempnam(sys_get_temp_dir(), 'wa');
-
-        if ($tmp === false) {
-            return false;
-        }
-
-        file_put_contents($tmp, 'webatze');
-
-        $ok = @ftp_put($verbindung, $ziel, $tmp, FTP_BINARY);
-
-        // Noch einmal ohne die Adresse, die der Server im Passivmodus
-        // nennt. Auf geteiltem Hosting steht dort haeufig eine interne
-        // NAT-Adresse; die Auflistung kommt damit manchmal trotzdem
-        // durch, das Hochladen nicht - und dann sieht es aus, als
-        // duerfte der Zugang nicht schreiben.
-        if (!$ok && defined('FTP_USEPASVADDRESS')) {
-            @ftp_set_option($verbindung, FTP_USEPASVADDRESS, false);
-            $ok = @ftp_put($verbindung, $ziel, $tmp, FTP_BINARY);
-        }
-
-        @unlink($tmp);
-
-        if ($ok) {
-            @ftp_delete($verbindung, $ziel);
-        }
-
-        return (bool) $ok;
-    }
-
     private static function anmeldeHilfe(string $user): string
     {
         $meldung = 'Der Server ist erreichbar, lehnt aber die Anmeldung ab. '
@@ -2398,6 +1777,26 @@ final class FtpDeployer
         return $meldung . ' Das Passwort ist das, das beim Anlegen des FTP-Kontos'
             . ' vergeben wurde - nicht das cPanel-Passwort. In cPanel unter'
             . ' „FTP-Konten“ laesst es sich neu setzen.';
+    }
+
+    /**
+     * Drei Faelle, drei Saetze - und nur einer davon ist ein Fehler.
+     *
+     * @param array{gelesen:bool, namen:array<int, string>} $inhalt
+     */
+    private static function inhaltMeldung(array $inhalt, string $heim): string
+    {
+        if (!$inhalt['gelesen']) {
+            return 'Der Startordner liess sich nicht auflisten.';
+        }
+
+        if ($inhalt['namen'] === []) {
+            return $heim . ' ist leer - lesen liess er sich aber. Bei einem frisch '
+                . 'angelegten Ordner ist das genau richtig.';
+        }
+
+        return count($inhalt['namen']) . ' Eintraege im Startordner: '
+            . implode(', ', array_slice($inhalt['namen'], 0, 8));
     }
 
     /** Was tun, wenn der Zielordner nicht passt? */
@@ -2450,38 +1849,6 @@ final class FtpDeployer
                 if ($sftp->is_dir($voll)) {
                     $gefunden[] = $voll;
                 }
-            }
-        }
-
-        return self::aufraeumen($gefunden);
-    }
-
-    /** @return array<int, string> */
-    private static function verzeichnisseFtp($verbindung, string $pfad, string $heim): array
-    {
-        $gefunden = [];
-
-        foreach (self::suchorte($pfad, $heim) as $ort) {
-            $liste = @ftp_rawlist($verbindung, $ort);
-
-            if (!is_array($liste)) {
-                continue;
-            }
-
-            foreach ($liste as $zeile) {
-                // "drwxr-xr-x 2 user group 4096 Jan 1 12:00 name"
-                if (!str_starts_with((string) $zeile, 'd')) {
-                    continue;
-                }
-
-                $teile = preg_split('/\s+/', (string) $zeile, 9);
-                $name = trim((string) ($teile[8] ?? ''));
-
-                if ($name === '' || $name === '.' || $name === '..' || str_starts_with($name, '.')) {
-                    continue;
-                }
-
-                $gefunden[] = rtrim($ort, '/') . '/' . $name;
             }
         }
 

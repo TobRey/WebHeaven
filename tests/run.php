@@ -1989,9 +1989,16 @@ test('Der Verbindungstest stuerzt nie ab', function (): void {
     // auf geteiltem Hosting oft der Fall - ist das kein Fehler, den man
     // abfangen kann, sondern ein Absturz: Fehler 500, ohne einen Hinweis
     // worauf. In den anderen Methoden stand die Pruefung laengst.
+    // Seit dem Neubau steckt aller FTP-Code in einer einzigen Datei -
+    // die Wache muss also dorthin zeigen, wo er wirklich liegt.
     $quelle = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
+        dirname(__DIR__) . '/public_html/app/Build/Ftp.php'
     );
+
+    ok(!str_contains(
+        (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'),
+        'ftp_connect('
+    ), 'Die Fachschicht spricht kein FTP mehr selbst');
 
     // Jeder Aufruf einer ftp_-Funktion braucht davor eine Pruefung.
     $stellen = [];
@@ -3429,15 +3436,11 @@ test('Ein leerer Ordner ist kein Netzwerkfehler', function (): void {
         ['gelesen' => false, 'namen' => [], 'grund' => ''], '/');
 
     ok(str_contains($tot, 'nicht auflisten'), 'Ein echter Fehlschlag heisst weiterhin so');
-    ok(str_contains($tot, 'naechste Zeile'), 'Und verweist auf die Zeile mit der Ursache');
 
     // Und die Namensliste muss "." und ".." draussen lassen.
-    $namen = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'nurNamen');
-    $namen->setAccessible(true);
-
     is(
         ['index.html', 'assets'],
-        $namen->invoke(null, ['/heim/index.html', '.', '..', '/heim/assets', '/heim/assets']),
+        \WebAtze\Build\Ftp::nurNamen(['/heim/index.html', '.', '..', '/heim/assets', '/heim/assets']),
         'Pfade werden zu Namen, Doppeltes und Punkte fliegen raus'
     );
 });
@@ -3445,93 +3448,89 @@ test('Ein leerer Ordner ist kein Netzwerkfehler', function (): void {
 // ==================================================================
 test('Bei toter Datenverbindung wird nachgemessen statt vermutet', function (): void {
     // "Meist eine blockierte Datenverbindung" ist eine Vermutung, und
-    // mit einer Vermutung geht man nicht zum Hoster - der schickt einen
-    // dann durch drei Runden Rueckfragen. Scheitert das Auflisten,
-    // schickt der Test jetzt PASV selbst, liest die genannte Adresse
-    // und klopft dort an. Abgewiesen, keine Antwort oder offen sind
-    // drei verschiedene Ursachen mit drei verschiedenen Zustaendigen.
-    $intern = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'internesNetz');
-    $intern->setAccessible(true);
-
+    // mit einer Vermutung geht man nicht zum Hoster. Scheitert das
+    // Auflisten, schickt Ftp::datenDetails() PASV selbst, liest die
+    // genannte Adresse und klopft dort an - dreimal, denn ein einzelner
+    // Port kann zufaellig belegt sein.
     foreach (['10.13.37.9', '192.168.1.50', '172.16.0.4', '127.0.0.1'] as $ip) {
-        ok($intern->invoke(null, $ip), $ip . ' gilt nur im eigenen Netz');
+        ok(\WebAtze\Build\Ftp::internesNetz($ip), $ip . ' gilt nur im eigenen Netz');
     }
 
     foreach (['132.148.182.72', '92.205.173.138', '1.1.1.1'] as $ip) {
-        ok(!$intern->invoke(null, $ip), $ip . ' ist von aussen erreichbar');
+        ok(!\WebAtze\Build\Ftp::internesNetz($ip), $ip . ' ist von aussen erreichbar');
     }
 
-    // Und die Stufe haengt an der gescheiterten Auflistung, nicht am
-    // leeren Ordner - sonst laeuft sie bei jeder frischen Website.
-    $quelle = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
-    );
+    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Ftp.php');
 
-    ok(str_contains($quelle, "if (!\$inhalt['gelesen']) {"),
-        'Nachgemessen wird nur bei einem echten Fehlschlag');
-    ok(str_contains($quelle, "self::datenStufe(\$verbindung, \$host, \$port)"),
-        'Die Datenverbindung bekommt eine eigene Stufe');
+    ok(str_contains($quelle, "ftp_raw(\$this->c, 'PASV')"), 'PASV wird selbst geschickt');
     ok(str_contains($quelle, 'for ($i = 0; $i < 3; $i++)'),
-        'Und probiert drei Ports, nicht einen - einer kann Zufall sein');
-    ok(str_contains($quelle, "ftp_raw(\$verbindung, 'PASV')"),
-        'PASV wird selbst geschickt');
+        'Und drei Ports geprueft - einer allein kann Zufall sein');
     ok(str_contains($quelle, 'Connection refused'),
         'Ein abgewiesener Port wird beim Namen genannt');
-    ok(str_contains($quelle, "ftp_raw(\$verbindung, 'FEAT')"),
-        'Und der Server wird gefragt, was er kann');
+
+    // Aus den rohen LIST-Zeilen kommen Namen heraus, nicht Zeilen.
+    is(
+        ['assets', 'index.html'],
+        \WebAtze\Build\Ftp::ausRohzeilen([
+            'total 2',
+            'drwxr-xr-x 2 web web  4096 Sep  5 12:00 assets',
+            '-rw-r--r-- 1 web web    34 Sep  5 12:00 index.html',
+        ]),
+        'Die Namen werden aus den Rohzeilen geholt'
+    );
+
+    ok(\WebAtze\Build\Ftp::ausRohzeilen(false) === false,
+        'Und ein Fehlschlag bleibt ein Fehlschlag');
 });
 
 // ==================================================================
-test('Nach einem Abbruch wird nicht auf derselben Leitung weitergefragt', function (): void {
+test('Der Neubau kann eine verdorbene Leitung nicht weiterreichen', function (): void {
     // Gemessen gegen einen echten FTPS-Server: Bricht eine Uebertragung
     // ab, liegt der Steuerkanal danach um eine Antwort versetzt.
-    // ftp_chdir bekommt das "226 Fertig" des vorigen Befehls und meldet
-    // false, ftp_pwd bekommt dessen "250 Ok" und meldet ebenfalls false.
-    // Jede Stufe nach dem ersten Fehlschlag war damit erfunden: Der
-    // Zielordner "gibt es nicht", obwohl der Server ihn eine Zeile
-    // spaeter mit 250 bestaetigt. Ohne Verschluesselung tritt das nicht
-    // auf - mit ist es der Normalfall.
-    $quelle = (string) file_get_contents(
+    // ftp_chdir bekommt das "226 Fertig" des vorigen Befehls, ftp_pwd
+    // dessen "250 Ok". Jede Stufe nach dem ersten Fehlschlag war damit
+    // erfunden - der Zielordner "gibt es nicht", obwohl der Server ihn
+    // eine Zeile spaeter mit 250 bestaetigt.
+    //
+    // Im Neubau steckt der Neuaufbau in mitNeustart(). Kein Aufrufer
+    // kann ihn vergessen, weil er die Verbindung nie in die Hand
+    // bekommt.
+    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Ftp.php');
+
+    ok(str_contains($quelle, 'private function mitNeustart(callable $tat)'),
+        'Es gibt genau eine Stelle, die einen Fehlschlag auffaengt');
+    ok(str_contains($quelle, '$this->ohnePasvAdresse = !$this->ohnePasvAdresse;'),
+        'Der zweite Versuch schaltet die Passivadresse um');
+    ok(str_contains($quelle, 'private $c = null;'),
+        'Die Verbindung bleibt drinnen - sie wird nie herausgereicht');
+
+    foreach (['liste', 'schreiben', 'lesen'] as $tat) {
+        ok(preg_match('/function ' . $tat . '\\(.*?mitNeustart/s', $quelle) === 1,
+            'Die Uebertragung ' . $tat . '() laeuft ueber mitNeustart()');
+    }
+
+    // null ist nicht [] - der Fehler, der die meiste Zeit gekostet hat.
+    ok(str_contains($quelle, 'return $roh === false ? null : self::nurNamen((array) $roh);'),
+        'Gescheitert gibt null, leer gibt eine leere Liste');
+
+    // Und die Fachschicht erkundet erst, wenn das Urteil steht.
+    $deployer = (string) file_get_contents(
         dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
     );
 
-    ok(str_contains($quelle, 'private static function neueLeitung('),
-        'Es gibt einen Weg, frisch zu verbinden');
-    ok(str_contains($quelle, 'self::neueLeitung($verbindung, $host, $port, $user, $password, $verschluesselt)'),
-        'Nach einem gescheiterten Auflisten wird er auch benutzt');
+    $urteil = strpos($deployer, "\$ergebnis = Ftp::pruefen(");
+    $erkunden = strpos($deployer, 'self::ordnerSuchen(');
 
-    // Und die Reihenfolge: erst urteilen, dann erkunden.
-    //
-    // verzeichnisseFtp probiert Pfade durch, die es meist nicht gibt -
-    // jeder Fehlversuch bricht eine Datenverbindung ab. Stand das vor
-    // dem chdir, war das Urteil ueber den Zielordner geraten.
-    $chdir = strpos($quelle, '$vorhanden = @ftp_chdir($verbindung, $pfad);');
-    $probe = strpos($quelle, "'Schreibprobe',");
-    $erkunden = strpos($quelle, '$ordner = self::verzeichnisseFtp($verbindung, $pfad, $daHeim);');
+    ok($urteil !== false && $erkunden !== false, 'Beide Stellen gibt es');
+    ok($erkunden > $urteil, 'Erkundet wird erst nach dem Urteil');
+    ok(str_contains($deployer, "if (!\$ergebnis['ok']) {"),
+        'Und nur dann, wenn ein Vorschlag gebraucht wird');
 
-    ok($chdir !== false && $erkunden !== false, 'Beide Stellen gibt es');
-    ok($erkunden > $chdir, 'Erkundet wird erst nach dem Urteil ueber den Zielordner');
-    ok($erkunden > $probe, 'Und erst nach der Schreibprobe');
-    ok(str_contains($quelle, "if (!\$vorhanden) {\n            \$frisch = self::neueLeitung("),
-        'Erkundet wird nur bei Bedarf, und auf frischer Leitung');
-
-    // Der Wortlaut von PHP gehoert in die Meldung: "SSL read failed"
-    // ist ein anderes Gespraech mit dem Hoster als "connect failed".
-    $meldung = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'inhaltMeldung');
-    $meldung->setAccessible(true);
-
-    $tls = (string) $meldung->invoke(null,
-        ['gelesen' => false, 'namen' => [], 'grund' => 'SSL read failed'], '/');
-
-    ok(str_contains($tls, 'SSL read failed'), 'Der Wortlaut steht in der Meldung');
-    ok(str_contains($tls, 'TLS-Sitzung'), 'Und wird als TLS-Sache erklaert');
-    ok(str_contains($tls, 'ohne') && str_contains($tls, 'Verschluesselung'),
-        'Mit dem naechsten Schritt: einmal ohne Verschluesselung probieren');
-
-    $netz = (string) $meldung->invoke(null,
-        ['gelesen' => false, 'namen' => [], 'grund' => 'php_connect_nonb() failed'], '/');
-
-    ok(!str_contains($netz, 'TLS-Sitzung'), 'Ein Netzfehler wird nicht TLS angelastet');
+    // Der Wortlaut von PHP gehoert in die Meldung.
+    ok(str_contains($quelle, "preg_replace('/^ftp_\\w+\\(\\):\\s*/'"),
+        'Die Warnung von PHP wird eingefangen');
+    ok(str_contains($quelle, 'TLS-Sitzung'),
+        'Ein Abbruch in der Verschluesselung wird als solcher erklaert');
 });
 
 // ==================================================================
@@ -3603,11 +3602,14 @@ test('Die Zusammenfassung widerspricht der Stufenkette nicht', function (): void
     // Die Schreibprobe versucht es ohne die NAT-Adresse noch einmal.
     // Auf geteiltem Hosting kommt die Auflistung manchmal durch und das
     // Hochladen nicht - dann sieht es aus wie eine fehlende Berechtigung.
-    $probe = substr($quelle, strpos($quelle, 'function schreibprobeFtp'));
-    $probe = substr($probe, 0, 1400);
+    // Der zweite Versuch steckt jetzt in mitNeustart() und gilt damit
+    // fuer jede Uebertragung, nicht nur fuer die Schreibprobe.
+    $neu = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Ftp.php');
 
-    ok(str_contains($probe, 'FTP_USEPASVADDRESS'),
-        'Die Schreibprobe versucht es ohne die Passivadresse noch einmal');
+    ok(str_contains($neu, 'FTP_USEPASVADDRESS'),
+        'Die Passivadresse wird bei einem Fehlschlag umgangen');
+    ok(str_contains($neu, 'private function mitNeustart(callable $tat)'),
+        'Und zwar fuer jede Uebertragung, nicht nur fuer eine');
 });
 
 // ==================================================================
@@ -7138,6 +7140,97 @@ test('Im Hellen bleibt lesbar, was im Dunkeln lesbar war', function (): void {
         'Hell: leise bleibt leiser als gedaempft');
     ok($k('#8688A8', '#12122A') < $k('#9B9CB8', '#12122A'),
         'Dunkel: ebenso');
+});
+
+// ==================================================================
+test('Der Empfaenger nimmt nur an, was unterschrieben und drinnen ist', function (): void {
+    // Der Weg ohne FTP: eine Datei, die einmal von Hand auf die
+    // Kundenwebsite gelegt wird und danach ueber HTTPS Dateien
+    // entgegennimmt. Sie steht offen im Netz - also muss jede der vier
+    // Wachen darin stehen, und der Schluessel darf nicht die Vorlage
+    // sein.
+    $vorlage = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Kit/empfang/webatze-empfang.php'
+    );
+
+    ok(str_contains($vorlage, '%%SCHLUESSEL%%'), 'Die Vorlage hat einen Platzhalter');
+
+    foreach ([
+        'HOECHSTALTER' => 'Sie laeuft von selbst ab',
+        'hash_hmac' => 'Sie prueft die Unterschrift',
+        'hash_equals' => 'Und zwar zeitkonstant',
+        'FENSTER' => 'Sie hat ein Zeitfenster',
+        'Schon dagewesen' => 'Sie merkt sich Einmalwerte',
+        'Nur relative Pfade' => 'Sie weist absolute Pfade ab',
+        'realpath' => 'Und prueft den echten Pfad gegen Symlinks',
+        'verschwinden' => 'Sie loescht sich selbst wieder',
+    ] as $stueck => $warum) {
+        ok(str_contains($vorlage, $stueck), $warum);
+    }
+
+    // Der Pfad wird an den einzelnen Schritten geprueft, nicht am Text:
+    // ein ".." mitten in einem Namen ist harmlos, eines als eigener
+    // Schritt fuehrt hinaus.
+    ok(str_contains($vorlage, "foreach (explode('/', str_replace('\\\\', '/', \$ziel)) as \$schritt)"),
+        'Geprueft wird Schritt fuer Schritt, auch mit Rueckwaerts-Schraegstrich');
+
+    // Und die ausgelieferte Datei traegt einen echten Schluessel.
+    $projekt = (int) \WebAtze\Core\Db::insert('projects', [
+        'name' => 'Empfangstest', 'slug' => 'empfang-' . bin2hex(random_bytes(4)),
+        'status' => 'ready', 'created_at' => \WebAtze\Core\Db::now(),
+        'updated_at' => \WebAtze\Core\Db::now(),
+    ]);
+
+    $datei = \WebAtze\Build\Empfang::datei($projekt);
+
+    ok(!str_contains($datei, '%%SCHLUESSEL%%'), 'Im Ergebnis steht kein Platzhalter mehr');
+    ok(preg_match("/const SCHLUESSEL = '[0-9a-f]{64}'/", $datei) === 1,
+        'Sondern ein Schluessel aus 64 Zeichen');
+
+    // Zwei Websites, zwei Schluessel - sonst oeffnet einer alle.
+    $zweites = (int) \WebAtze\Core\Db::insert('projects', [
+        'name' => 'Empfangstest 2', 'slug' => 'empfang2-' . bin2hex(random_bytes(4)),
+        'status' => 'ready', 'created_at' => \WebAtze\Core\Db::now(),
+        'updated_at' => \WebAtze\Core\Db::now(),
+    ]);
+
+    ok(\WebAtze\Build\Empfang::schluessel($projekt) !== \WebAtze\Build\Empfang::schluessel($zweites),
+        'Jede Website bekommt ihren eigenen Schluessel');
+
+    // Und er ist nicht der der Bruecke: Wer den Empfaenger liest, haette
+    // sonst auch die Bruecke offen.
+    ok(\WebAtze\Build\Empfang::schluessel($projekt) !== \WebAtze\Domain\Bridge::secret($projekt),
+        'Der Schluessel der Bruecke bleibt ein anderer');
+
+    ok(\WebAtze\Build\Empfang::neuerSchluessel($projekt) !== $datei,
+        'Ein neuer Schluessel laesst sich setzen');
+
+    \WebAtze\Core\Db::delete('projects', 'id IN (:a, :b)', ['a' => $projekt, 'b' => $zweites]);
+});
+
+// ==================================================================
+test('Der Ausgangstest trennt die eigene Sperre von der fremden', function (): void {
+    // Die Frage, die sich am Kundenserver nie beantworten liess:
+    // Scheitert dort die Datenverbindung, kann die Ursache eingehend bei
+    // ihm liegen - oder ausgehend bei uns. Von einem Endpunkt aus sieht
+    // beides gleich aus.
+    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Ftp.php');
+
+    ok(str_contains($quelle, 'public static function ausgangsprobe()'),
+        'Es gibt eine Probe an einem fremden Ziel');
+    ok(str_contains($quelle, "private const FREMDE = ["),
+        'Mit mehr als einem Server, damit einer ausfallen darf');
+    ok(str_contains($quelle, '$bisPort21'),
+        'Sie unterscheidet "gar nicht hinaus" von "angemeldet, keine Daten"');
+    ok(str_contains($quelle, 'TIMEOUT_PROBE'),
+        'Und haelt die Seite nicht eine halbe Minute an');
+
+    // Sie darf nie werfen - auch nicht dort, wo nichts erreichbar ist.
+    $ergebnis = \WebAtze\Build\Ftp::ausgangsprobe();
+
+    ok(isset($ergebnis['ok'], $ergebnis['satz'], $ergebnis['details']),
+        'Sie liefert immer ein Ergebnis statt einer Ausnahme');
+    ok($ergebnis['satz'] !== '', 'Und immer einen Satz dazu');
 });
 
 // ==================================================================

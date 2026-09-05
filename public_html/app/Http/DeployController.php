@@ -143,6 +143,82 @@ final class DeployController
         return $this->back($project);
     }
 
+    /**
+     * Kann dieser Server überhaupt FTP?
+     *
+     * Die Frage, die sich am Kundenserver nie beantworten liess:
+     * Scheitert dort die Datenverbindung, kann die Ursache eingehend
+     * bei ihm liegen - oder ausgehend bei uns. Von einem Endpunkt aus
+     * sieht beides gleich aus. Diese Probe fragt dasselbe an einem
+     * fremden Ziel und trennt die beiden Fälle.
+     */
+    public function ausgang(Request $request): Response
+    {
+        $project = ProjectController::find($request->paramInt('id'));
+
+        if ($project === null) {
+            return Response::notFound();
+        }
+
+        try {
+            $ergebnis = \WebAtze\Build\Ftp::ausgangsprobe();
+        } catch (\Throwable $e) {
+            Logger::exception($e);
+            Session::flash('error', 'Die Probe ist abgestuerzt. Bitte melde dich.');
+
+            return $this->back($project);
+        }
+
+        Session::flash($ergebnis['ok'] ? 'success' : 'warning', $ergebnis['satz']);
+        Session::put('ftp_ordner_' . (int) $project['id'], [
+            'details' => $ergebnis['details'],
+        ]);
+
+        return $this->back($project);
+    }
+
+    /**
+     * Die Empfangsdatei zum Hinlegen.
+     *
+     * Sie wird einmal von Hand auf die Kundenwebsite geladen - mit dem
+     * FTP-Programm, das vom eigenen Rechner aus funktioniert. Danach
+     * geht alles über HTTPS.
+     */
+    public function empfangsdatei(Request $request): Response
+    {
+        $project = ProjectController::find($request->paramInt('id'));
+
+        if ($project === null) {
+            return Response::notFound();
+        }
+
+        $inhalt = \WebAtze\Build\Empfang::datei((int) $project['id']);
+
+        if ($inhalt === '') {
+            Session::flash('error', 'Die Vorlage für den Empfänger fehlt im Paket.');
+
+            return $this->back($project);
+        }
+
+        Audit::log('empfang.datei', (string) $project['name'], [], $request);
+
+        // Bewusst als text/plain und mit .txt am Namen: Eine PHP-Datei,
+        // die der Browser direkt herunterlaedt, ist auf manchen Systemen
+        // eine Warnung wert - und beim Hochladen wird sie ohnehin
+        // umbenannt. Der Hinweis dazu steht auf der Seite.
+        return Response::text($inhalt)
+            ->header('Content-Disposition', 'attachment; filename="'
+                . \WebAtze\Build\Empfang::DATEI . '.txt"')
+            ->noCache()
+            ->noIndex();
+    }
+
+    /** Ein hochgeladenes Archiv über HTTPS schicken statt über FTP. */
+    public function uploadUeberBruecke(Request $request): Response
+    {
+        return $this->archivAnnehmen($request, 'zip-per-bruecke');
+    }
+
     /** Verbindung prüfen, ohne etwas hochzuladen. */
     public function testTarget(Request $request): Response
     {
@@ -197,6 +273,9 @@ final class DeployController
             // Der Servername, der auflöst - zum Anklicken statt zum
             // Abtippen.
             'vorschlagHost' => (string) ($result['vorschlagHost'] ?? ''),
+            // Was tatsaechlich gemessen wurde - ein Satz steht in der
+            // Meldung, die Einzelheiten liegen aufklappbar darunter.
+            'details' => (array) ($result['details'] ?? []),
             // Die einzelnen Stufen: Servername, Verbindung, Anmeldung,
             // Passivmodus, Startordner, Inhalt, Zielordner, Schreibprobe.
             // Die erste rote Stufe ist die Diagnose - und dass die
@@ -297,6 +376,18 @@ final class DeployController
      */
     public function uploadZip(Request $request): Response
     {
+        return $this->archivAnnehmen($request, 'zip-hochladen');
+    }
+
+    /**
+     * Ein Archiv entgegennehmen und als Auftrag einreihen.
+     *
+     * Zwei Wege, ein Rumpf: Ob es danach ueber FTP oder ueber HTTPS
+     * hinausgeht, entscheidet allein der Auftragstyp - alles davor ist
+     * dasselbe, und das soll es auch bleiben.
+     */
+    private function archivAnnehmen(Request $request, string $typ): Response
+    {
         $project = ProjectController::find($request->paramInt('id'));
 
         if ($project === null) {
@@ -309,14 +400,23 @@ final class DeployController
             return $this->back($project);
         }
 
-        $ziel = Db::first(
-            'SELECT id FROM deploy_targets WHERE project_id = :p LIMIT 1',
-            ['p' => (int) $project['id']]
-        );
+        // Der Weg ueber HTTPS braucht keine FTP-Zugangsdaten - er
+        // braucht die Adresse der Website und die Empfangsdatei darauf.
+        if ($typ === 'zip-hochladen') {
+            $ziel = Db::first(
+                'SELECT id FROM deploy_targets WHERE project_id = :p LIMIT 1',
+                ['p' => (int) $project['id']]
+            );
 
-        if ($ziel === null) {
+            if ($ziel === null) {
+                Session::flash('error',
+                    'Ohne Zugangsdaten gibt es kein Ziel. Trage sie unten ein und teste die Verbindung.');
+
+                return $this->back($project);
+            }
+        } elseif (trim((string) ($project['domain'] ?? '')) === '') {
             Session::flash('error',
-                'Ohne Zugangsdaten gibt es kein Ziel. Trage sie unten ein und teste die Verbindung.');
+                'Ohne Adresse der Website weiss ich nicht, wen ich anrufen soll.');
 
             return $this->back($project);
         }
@@ -363,7 +463,7 @@ final class DeployController
             return $this->back($project);
         }
 
-        Jobs::enqueue('zip-hochladen', ['zip' => $pfad], (int) $project['id']);
+        Jobs::enqueue($typ, ['zip' => $pfad], (int) $project['id']);
         Jobs::nudge();
 
         Audit::log('deploy.zip.started', (string) $project['name'], [

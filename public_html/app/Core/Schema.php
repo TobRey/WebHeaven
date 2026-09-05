@@ -1200,6 +1200,17 @@ final class Schema
                 ALTER TABLE deploy_targets ADD COLUMN hosting_account_id {int} NULL;
                 CREATE INDEX IF NOT EXISTS idx_deploy_account ON deploy_targets (hosting_account_id);
             ',
+
+            // ----------------------------------------------------------
+            // 049: der Schluessel des Empfaengers
+            //
+            // Eigener Schluessel je Website, getrennt von dem der
+            // Bruecke: Wer die Empfangsdatei auf der Kundenwebsite
+            // liest, haette sonst auch die Bruecke offen.
+            // ----------------------------------------------------------
+            '049_empfang_secret' => '
+                ALTER TABLE projects ADD COLUMN empfang_secret {string:64} NOT NULL DEFAULT \'\';
+            ',
         ];
     }
 
@@ -1220,7 +1231,7 @@ final class Schema
                 '{bool}' => 'TINYINT(1)',
                 '{text}' => 'MEDIUMTEXT',
                 '{datetime}' => 'DATETIME',
-            ];
+        ];
 
         $sql = strtr($sql, $map);
 

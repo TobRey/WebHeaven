@@ -56,6 +56,7 @@ final class Pipeline
             'deploy' => self::deploy($job, $budget),
             'live' => self::pullLive($job, $budget),
             'zip-hochladen' => self::deployZip($job, $budget),
+            'zip-per-bruecke' => self::deployBruecke($job, $budget),
             default => throw new RuntimeException('Unbekannte Auftragsart: ' . $type),
         };
     }
@@ -987,6 +988,75 @@ final class Pipeline
      * Der Weg ohne den eingebauten Generator: Auftragstext kopieren,
      * die Website anderswo bauen lassen, das Ergebnis hier hochladen.
      */
+    /**
+     * Dasselbe Archiv, nur über HTTPS statt FTP.
+     *
+     * Für den Fall, dass die FTP-Datenverbindung nicht durchkommt -
+     * gemessen, nicht vermutet: Der Ausgangstest sagt, ob es daran
+     * liegt. Vorbedingung ist, dass die Empfangsdatei einmal von Hand
+     * auf der Kundenwebsite liegt.
+     */
+    private static function deployBruecke(array $job, float $budget): void
+    {
+        $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
+
+        if ($project === null) {
+            Jobs::fail($job['id'], 'Projekt nicht gefunden.', false);
+
+            return;
+        }
+
+        $zip = (string) ($job['payload']['zip'] ?? '');
+        $erlaubt = STORAGE_DIR . '/uploads/';
+
+        if ($zip === '' || !str_starts_with($zip, $erlaubt) || !is_file($zip)) {
+            Jobs::fail($job['id'], 'Das hochgeladene Archiv ist nicht mehr da.', false);
+
+            return;
+        }
+
+        Jobs::progress($job['id'], 'hochladen', 10, 'Die Website wird angerufen …');
+
+        $ergebnis = \WebAtze\Build\Empfang::senden(
+            $project,
+            $zip,
+            static function (int $fertig, int $gesamt, string $datei) use ($job): void {
+                Jobs::progress(
+                    $job['id'],
+                    'hochladen',
+                    10 + (int) round(85 * ($gesamt > 0 ? $fertig / $gesamt : 0)),
+                    sprintf('%d von %d Dateien (%s)', $fertig, $gesamt, $datei)
+                );
+            },
+            $budget - 5.0
+        );
+
+        @unlink($zip);
+
+        if (!$ergebnis['ok']) {
+            Jobs::fail($job['id'], $ergebnis['error'], $ergebnis['retryable'] ?? true);
+
+            return;
+        }
+
+        Jobs::progress($job['id'], 'fertig', 100, 'Hochgeladen.');
+        Jobs::finish($job['id'], sprintf(
+            '%d Dateien über HTTPS hochgeladen%s.',
+            $ergebnis['files'],
+            ($ergebnis['aufgeraeumt'] ?? false) ? ' - die Empfangsdatei ist wieder weg' : ''
+        ));
+
+        Db::update('projects', [
+            'status' => 'live',
+            'published_at' => Db::now(),
+            'updated_at' => Db::now(),
+        ], 'id = :id', ['id' => (int) $project['id']]);
+
+        Audit::log('project.deployed.bruecke', (string) $project['name'], [
+            'dateien' => $ergebnis['files'],
+        ]);
+    }
+
     private static function deployZip(array $job, float $budget): void
     {
         $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
