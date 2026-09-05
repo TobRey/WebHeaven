@@ -3469,8 +3469,10 @@ test('Bei toter Datenverbindung wird nachgemessen statt vermutet', function (): 
 
     ok(str_contains($quelle, "if (!\$inhalt['gelesen']) {"),
         'Nachgemessen wird nur bei einem echten Fehlschlag');
-    ok(str_contains($quelle, "self::datenStufe(\$verbindung, \$host)"),
+    ok(str_contains($quelle, "self::datenStufe(\$verbindung, \$host, \$port)"),
         'Die Datenverbindung bekommt eine eigene Stufe');
+    ok(str_contains($quelle, 'for ($i = 0; $i < 3; $i++)'),
+        'Und probiert drei Ports, nicht einen - einer kann Zufall sein');
     ok(str_contains($quelle, "ftp_raw(\$verbindung, 'PASV')"),
         'PASV wird selbst geschickt');
     ok(str_contains($quelle, 'Connection refused'),
