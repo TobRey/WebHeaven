@@ -1837,7 +1837,7 @@ final class FtpDeployer
         // anklopft? Abgewiesen, keine Antwort oder offen - drei
         // verschiedene Ursachen mit drei verschiedenen Zustaendigkeiten.
         if (!$inhalt['gelesen']) {
-            $stufen[] = self::datenStufe($verbindung, $host);
+            $stufen[] = self::datenStufe($verbindung, $host, $port);
             $stufen[] = self::merkmalStufe($verbindung, $verschluesselt);
         }
 
@@ -2091,67 +2091,118 @@ final class FtpDeployer
      *
      * @return array{name:string, ok:bool, info:string}
      */
-    private static function datenStufe($verbindung, string $host): array
+    private static function datenStufe($verbindung, string $host, int $port): array
+    {
+        // Dreimal, nicht einmal.
+        //
+        // Ein einzelner Port kann zufaellig belegt sein - drei
+        // verschiedene aus demselben Bereich sind es nicht. Wenn alle
+        // drei in dieselbe Zeitueberschreitung laufen, ist der ganze
+        // Passivbereich zu, und genau das ist der Satz, den der Hoster
+        // nicht mehr wegdiskutieren kann.
+        $versuche = [];
+        $offen = null;
+
+        for ($i = 0; $i < 3; $i++) {
+            $versuch = self::passivProbe($verbindung, $host);
+
+            if ($versuch === null) {
+                break;
+            }
+
+            $versuche[] = $versuch;
+
+            if ($versuch['offen']) {
+                $offen = $versuch;
+                break;
+            }
+        }
+
+        if ($versuche === []) {
+            return self::stufe(
+                'Datenverbindung',
+                false,
+                'Der Server hat auf PASV nicht wie erwartet geantwortet.'
+            );
+        }
+
+        $adresse = $versuche[0]['adresse'];
+        $ports = implode(', ', array_map(static fn (array $v): string => (string) $v['port'], $versuche));
+        $intern = $versuche[0]['intern'];
+
+        $wo = 'Der Server nennt ' . $adresse
+            . (count($versuche) > 1 ? ', Ports ' . $ports : ':' . $versuche[0]['port']);
+
+        if ($intern) {
+            $wo .= ' - eine interne Adresse, von aussen nicht erreichbar. Geklopft habe ich '
+                . 'deshalb an ' . $host;
+        }
+
+        if ($offen !== null) {
+            return self::stufe(
+                'Datenverbindung',
+                true,
+                $wo . '. Auf Port ' . $offen['port'] . ' steht die Verbindung. Der Weg ist '
+                . 'also frei - dann liegt es nicht am Netz, sondern am Auflisten selbst.'
+            );
+        }
+
+        $abgewiesen = $versuche[0]['abgewiesen'];
+
+        return self::stufe(
+            'Datenverbindung',
+            false,
+            $wo . '. Keiner davon nimmt eine Verbindung an (' . $versuche[0]['text'] . '). '
+            . ($abgewiesen
+                ? 'Abgewiesen heisst: Der Server oeffnet den Port nicht.'
+                : 'Keine Antwort heisst: Die Pakete werden unterwegs verworfen, typisch fuer '
+                    . 'eine Firewall.')
+            . ' Port ' . $port . ' steht, ' . count($versuche) . ' Ports aus dem '
+            . 'Passivbereich stehen nicht - das kann nur der Hoster aendern.'
+        );
+    }
+
+    /**
+     * Einmal PASV schicken und an der genannten Stelle anklopfen.
+     *
+     * @return array{adresse:string, port:int, intern:bool, offen:bool, abgewiesen:bool, text:string}|null
+     */
+    private static function passivProbe($verbindung, string $host): ?array
     {
         $antwort = @ftp_raw($verbindung, 'PASV');
         $zeile = trim((string) ($antwort[0] ?? ''));
 
         if (!preg_match('/\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)/', $zeile, $t)) {
-            return self::stufe(
-                'Datenverbindung',
-                false,
-                'Der Server hat auf PASV nicht wie erwartet geantwortet: '
-                . ($zeile !== '' ? $zeile : 'gar nicht')
-            );
+            return null;
         }
 
         $adresse = $t[1] . '.' . $t[2] . '.' . $t[3] . '.' . $t[4];
-        $dPort = ((int) $t[5] << 8) + (int) $t[6];
+        $port = ((int) $t[5] << 8) + (int) $t[6];
         $intern = self::internesNetz($adresse);
-
-        // Angeklopft wird an der genannten Adresse - ausser sie ist
-        // intern, dann an der, ueber die wir ohnehin schon reden.
-        $ziel = $intern ? $host : $adresse;
 
         $fehler = 0;
         $text = '';
-        $sock = @fsockopen($ziel, $dPort, $fehler, $text, 8.0);
-
-        $wo = 'Der Server nennt ' . $adresse . ':' . $dPort;
-
-        if ($intern) {
-            $wo .= ' - eine interne Adresse, von aussen nicht erreichbar. Geklopft habe '
-                . 'ich deshalb an ' . $host . ':' . $dPort;
-        }
+        $sock = @fsockopen($intern ? $host : $adresse, $port, $fehler, $text, 8.0);
 
         if (is_resource($sock)) {
             fclose($sock);
 
-            return self::stufe(
-                'Datenverbindung',
-                true,
-                $wo . '. Dort steht die Verbindung. Der Weg ist also frei - dann liegt es '
-                . 'nicht am Netz, sondern am Auflisten selbst.'
-            );
+            return ['adresse' => $adresse, 'port' => $port, 'intern' => $intern,
+                'offen' => true, 'abgewiesen' => false, 'text' => 'offen'];
         }
 
         // "Connection refused" heisst: da ist ein Rechner, aber kein
         // offener Port. Eine Zeitueberschreitung heisst: die Pakete
-        // verschwinden unterwegs. Das sind zwei verschiedene Gespraeche
-        // mit dem Hoster.
-        $abgewiesen = $fehler === 111 || stripos($text, 'refused') !== false;
-
-        return self::stufe(
-            'Datenverbindung',
-            false,
-            $wo . '. ' . ($abgewiesen
-                ? 'Dort wird die Verbindung abgewiesen (Connection refused) - der Port ist '
-                    . 'nicht offen. Das kann nur der Hoster aendern: Der Passiv-Portbereich '
-                    . 'muss von aussen erreichbar sein.'
-                : 'Dort kommt keine Antwort (' . ($text !== '' ? $text : 'Zeitueberschreitung')
-                    . ') - typisch fuer eine Firewall, die die Pakete verwirft. Auch das '
-                    . 'gehoert dem Hoster.')
-        );
+        // verschwinden unterwegs. Zwei verschiedene Gespraeche mit dem
+        // Hoster.
+        return [
+            'adresse' => $adresse,
+            'port' => $port,
+            'intern' => $intern,
+            'offen' => false,
+            'abgewiesen' => $fehler === 111 || stripos($text, 'refused') !== false,
+            'text' => $text !== '' ? $text : 'Zeitueberschreitung',
+        ];
     }
 
     /**
