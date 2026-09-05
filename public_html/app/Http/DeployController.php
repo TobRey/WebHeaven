@@ -34,8 +34,6 @@ final class DeployController
             ['p' => (int) $project['id']]
         );
 
-        $providers = require APP_DIR . '/Support/providers.php';
-
         return Response::html(View::partial('layouts/admin', [
             'title' => 'Veröffentlichen: ' . (string) $project['name'],
             'content' => View::partial('admin/deploy', [
@@ -43,7 +41,6 @@ final class DeployController
                 'target' => $target,
                 'builds' => ZipExporter::listFor((int) $project['id']),
                 'job' => Jobs::activeFor((int) $project['id']),
-                'providers' => $providers,
                 'brief' => json_decode((string) $project['brief'], true) ?: [],
                 // Was der letzte Verbindungstest dort gefunden hat.
                 'gefunden' => (array) Session::get('ftp_ordner_' . (int) $project['id'], []),

@@ -10,12 +10,19 @@
 use WebAtze\Core\{Config, Csrf};
 
 /** @var array $project @var array|null $target @var array $builds */
-/** @var array|null $job @var array $providers @var array $brief */
+/** @var array|null $job @var array $brief @var array $gefunden */
 
 $base = '/' . trim((string) Config::get('create_path', 'create'), '/');
 $id = (int) $project['id'];
 
-$protocol = (string) ($target['protocol'] ?? 'sftp');
+/**
+ * Die Vorgaben sind die des Anbieters, bei dem alles liegt.
+ *
+ * FTP auf Port 21 und das Verzeichnis "/" - das ist bei einem
+ * cPanel-Unterkonto der Normalfall, und ein Formular, das schon
+ * richtig ausgefüllt ist, muss nichts erklären.
+ */
+$protocol = (string) ($target['protocol'] ?? 'ftp');
 $port = (int) ($target['port'] ?? ($protocol === 'sftp' ? 22 : 21));
 $latest = $builds[0] ?? null;
 ?>
@@ -224,51 +231,9 @@ $bereit = $target !== null;
     <div class="wa-panel__head">
         <h2 class="wa-panel__title">Zugang zum Server des Kunden</h2>
         <p class="wa-panel__hint">
-            Das Passwort wird verschlüsselt abgelegt und nie wieder angezeigt – auch hier nicht.
-            Wer es ändern will, gibt einfach ein neues ein.
+            Das Passwort wird verschlüsselt abgelegt und nie wieder angezeigt.
         </p>
     </div>
-
-    <?php
-    /**
-     * Nur die Anleitung des Anbieters zeigen, der im Formular angegeben
-     * wurde – neun aufgeklappte Kästen nebeneinander wären keine Hilfe,
-     * sondern eine Wand. Der Rest liegt darunter, einen Klick entfernt.
-     */
-    $chosen = (string) ($brief['hosting_provider'] ?? 'other');
-    if (!isset($providers['hosting'][$chosen])) {
-        $chosen = 'other';
-    }
-
-    $helpBlock = static function (array $info): void { ?>
-        <div class="wa-help__body">
-            <ol>
-                <?php foreach ($info['steps'] as $step): ?>
-                    <li><?= $step /* fest im Code hinterlegt, kein Benutzertext */ ?></li>
-                <?php endforeach; ?>
-            </ol>
-            <p><?= $info['note'] ?></p>
-        </div>
-    <?php };
-    ?>
-
-    <details class="wa-help" open>
-        <summary>Wo finde ich die Zugangsdaten bei <?= e($providers['hosting'][$chosen]['name']) ?>?</summary>
-        <?php $helpBlock($providers['hosting'][$chosen]); ?>
-    </details>
-
-    <details class="wa-help">
-        <summary>Bei einem anderen Anbieter</summary>
-        <div class="wa-help__body">
-            <?php foreach ($providers['hosting'] as $key => $info): ?>
-                <?php if ($key === $chosen) { continue; } ?>
-                <details class="wa-help">
-                    <summary><?= e($info['name']) ?></summary>
-                    <?php $helpBlock($info); ?>
-                </details>
-            <?php endforeach; ?>
-        </div>
-    </details>
 
     <form class="wa-form" method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/ftp" autocomplete="off">
         <?= Csrf::field() ?>
@@ -288,8 +253,15 @@ $bereit = $target !== null;
         <?php if ($konten !== []): ?>
             <div class="wa-field">
                 <label class="wa-label" for="hosting_account_id">Hosting-Zugang</label>
-                <select class="wa-select" id="hosting_account_id" name="hosting_account_id"
-                        data-hosting-select>
+                <?php
+                /* Diese Liste traegt bewusst nicht die Kennzeichnung der
+                   Anbieterliste aus dem Fragebogen. Die belegt Ueber-
+                   tragungsart, Port und Verzeichnis vor; hier stehen aber
+                   hinterlegte Zugaenge, die nichts dergleichen mitbringen
+                   - und die Felder darunter wurden dadurch bei jedem
+                   Seitenaufruf ueberschrieben. */
+                ?>
+                <select class="wa-select" id="hosting_account_id" name="hosting_account_id">
                     <option value="0">– eigene Angaben unten –</option>
                     <?php foreach ($konten as $h): ?>
                         <option value="<?= (int) $h['id'] ?>"<?= $gewaehlt === (int) $h['id'] ? ' selected' : '' ?>>
@@ -298,16 +270,10 @@ $bereit = $target !== null;
                         </option>
                     <?php endforeach; ?>
                 </select>
-                <span class="wa-label__hint">
-                    Ausgewählt zählt nur noch das <strong>Verzeichnis</strong> weiter
-                    unten. Ändert der Anbieter das Passwort, wird es einmal unter
-                    Einstellungen geändert und alle Websites stimmen wieder.
-                </span>
             </div>
         <?php else: ?>
             <p class="wa-hint">
-                Alle Websites beim selben Anbieter? Dann lohnt ein
-                <a href="<?= e($base) ?>/einstellungen#hosting">Hosting-Zugang</a>
+                <a href="<?= e($base) ?>/einstellungen#hosting">Hosting-Zugang anlegen</a>
                 &ndash; einmal eintragen statt bei jeder Website neu.
             </p>
         <?php endif; ?>
@@ -316,46 +282,25 @@ $bereit = $target !== null;
             <div class="wa-field">
                 <label class="wa-label" for="protocol">Verbindungsart</label>
                 <select class="wa-select" id="protocol" name="protocol" data-ftp-field="protocol">
-                    <option value="sftp" <?= $protocol === 'sftp' ? 'selected' : '' ?>>SFTP (empfohlen)</option>
-                    <option value="ftps" <?= $protocol === 'ftps' ? 'selected' : '' ?>>FTP mit Verschlüsselung</option>
                     <option value="ftp" <?= $protocol === 'ftp' ? 'selected' : '' ?>>FTP</option>
+                    <option value="ftps" <?= $protocol === 'ftps' ? 'selected' : '' ?>>FTP mit Verschlüsselung</option>
+                    <option value="sftp" <?= $protocol === 'sftp' ? 'selected' : '' ?>>SFTP</option>
                 </select>
-                <span class="wa-label__hint">
-                    <strong>Bei GoDaddy: FTP mit Verschlüsselung</strong>, Port 21.
-                    GoDaddy schreibt es selbst in die Zugangsdaten
-                    (&bdquo;FTP &amp; explicit FTPS port: 21&ldquo;) &ndash; derselbe
-                    Port, nur verschlüsselt. Reines FTP schickt das Passwort im
-                    Klartext; SFTP ist dort meist nicht freigeschaltet.
-                </span>
             </div>
 
             <div class="wa-field">
                 <label class="wa-label" for="port">Port</label>
                 <input class="wa-input" type="number" id="port" name="port" min="1" max="65535" data-ftp-field="port"
                        value="<?= $port ?>">
-                <span class="wa-label__hint">
-                    Beispiel: <code>21</code> für FTP, <code>22</code> für SFTP.
-                </span>
             </div>
         </div>
 
         <div class="wa-grid-2">
             <div class="wa-field">
                 <label class="wa-label" for="host">Server</label>
-                <input class="wa-input" type="text" id="host" name="host" placeholder="beispiel.ch"
+                <input class="wa-input" type="text" id="host" name="host" placeholder="domain.com"
                        data-ftp-field="host"
                        value="<?= e((string) ($target['host'] ?? '')) ?>">
-                <span class="wa-label__hint">
-                    Nur der Name, ohne <code>ftp://</code> und ohne Pfad.
-                    <br>
-                    GoDaddy zeigt in cPanel <code>ftp.deine-domain.ch</code> an. Das
-                    funktioniert nur, wenn in der DNS-Zone ein <code>ftp</code>-Eintrag
-                    steht &ndash; und den legt GoDaddy nicht immer an. Löst der Name
-                    nicht auf, nimm dieselbe Domain <strong>ohne <code>ftp.</code></strong>
-                    davor, etwa <code>web-atze.com</code>. Sonst hilft der Servername
-                    aus cPanel rechts unter &bdquo;Allgemeine Informationen&ldquo;.
-                    Der Verbindungstest probiert beides und sagt, welcher geht.
-                </span>
 
                 <?php
                 /* Der Name, den der letzte Test als auflösend gefunden hat.
@@ -380,13 +325,8 @@ $bereit = $target !== null;
             <div class="wa-field">
                 <label class="wa-label" for="username">Benutzername</label>
                 <input class="wa-input" type="text" id="username" name="username" autocomplete="off"
-                       placeholder="web@deine-domain.ch"
+                       placeholder="benutzer@domain.com"
                        value="<?= e((string) ($target['username'] ?? '')) ?>">
-                <span class="wa-label__hint">
-                    Beispiel: <code>sarahbernhart@preview2.web-atze.com</code> &ndash;
-                    cPanel schreibt Unterkonten immer in dieser vollen Form mit
-                    <code>@</code>. Das Hauptkonto hat keines.
-                </span>
             </div>
         </div>
 
@@ -400,36 +340,17 @@ $bereit = $target !== null;
 
             <div class="wa-field">
                 <label class="wa-label" for="path">Verzeichnis</label>
+                <?php
+                /* Das "/" steht schon drin, weil es fuer ein cPanel-Unterkonto
+                   stimmt: So eines sitzt bereits in seinem Ordner. Wer das
+                   Hauptkonto benutzt, traegt den vollen Pfad ein - und wer
+                   unsicher ist, drueckt einmal auf "Verbindung testen": Der
+                   Test sieht nach und legt die gefundenen Ordner als Knoepfe
+                   unter das Feld. */
+                ?>
                 <input class="wa-input" type="text" id="path" name="path" data-ftp-field="path"
-                       placeholder="/public_html"
-                       value="<?= e((string) ($target['remote_path'] ?? '/public_html')) ?>">
-                <span class="wa-label__hint">
-                    <?php /* Hier stand vorher, ein eigener Zugang je Subdomain sei
-                             nicht nötig – also das Gegenteil dessen, was cPanel
-                             nahelegt. Wer einen anlegt und dann den vollen Pfad
-                             einträgt, bekommt genau eine Meldung: fehlgeschlagen. */ ?>
-                    Es kommt darauf an, <em>welcher</em> Zugang:
-                </span>
-                <ul class="wa-label__hint">
-                    <li>
-                        Benutzername <strong>mit <code>@</code></strong>
-                        (cPanel-Unterkonto, etwa <code>web@preview.deine-domain.ch</code>):
-                        Verzeichnis <strong><code>/</code></strong>. Ein solches Konto
-                        sitzt bereits in seinem Ordner &ndash; was in cPanel als
-                        Verzeichnis stand, ist von dort aus die Wurzel.
-                    </li>
-                    <li>
-                        Benutzername <strong>ohne <code>@</code></strong>
-                        (Haupt-cPanel-Konto): der volle Pfad, also
-                        <code>/public_html</code> bzw. bei einer Subdomain
-                        <code>/public_html/preview.deine-domain.ch</code>.
-                    </li>
-                    <li>Bei Plesk heisst er <code>/httpdocs</code>, bei Infomaniak <code>/web</code>.</li>
-                </ul>
-                <span class="wa-label__hint">
-                    Unsicher? Einmal &bdquo;Verbindung testen&ldquo; &ndash; der Test
-                    sieht nach der Anmeldung nach und schlägt den passenden Ordner vor.
-                </span>
+                       placeholder="/"
+                       value="<?= e((string) ($target['remote_path'] ?? '/')) ?>">
 
                 <?php
                     $ordner = (array) ($gefunden['ordner'] ?? []);

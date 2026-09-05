@@ -3298,7 +3298,6 @@ test('Die beiden Knoepfe stehen da, auch ohne Zugangsdaten', function (): void {
             'protocol' => 'ftps', 'port' => 21, 'remote_path' => '/public_html',
         ],
         'builds' => [], 'job' => null, 'brief' => [],
-        'providers' => require dirname(__DIR__) . '/public_html/app/Support/providers.php',
         'gefunden' => [], 'hostingAccounts' => [],
     ]);
 
@@ -3306,7 +3305,6 @@ test('Die beiden Knoepfe stehen da, auch ohne Zugangsdaten', function (): void {
         'project' => ['id' => 7, 'name' => 'Probe', 'status' => 'draft', 'brief' => '{}'],
         'target' => null,
         'builds' => [], 'job' => null, 'brief' => [],
-        'providers' => require dirname(__DIR__) . '/public_html/app/Support/providers.php',
         'gefunden' => [], 'hostingAccounts' => [],
     ]);
 
@@ -3492,19 +3490,63 @@ test('Ein festgenageltes cPanel-Konto bekommt den richtigen Ordner', function ()
 });
 
 // ==================================================================
-test('Der Hinweis im Formular widerspricht cPanel nicht mehr', function (): void {
-    // Hier stand: "Ein FTP-Zugang der Hauptdomain kommt dort hin - ein
-    // eigener Zugang je Subdomain ist nicht noetig." Also das Gegenteil
-    // dessen, was cPanel nahelegt. Wer einen anlegte und dann den vollen
-    // Pfad eintrug, bekam genau eine Meldung: fehlgeschlagen.
+test('Das FTP-Formular erklaert nicht, es zeigt', function (): void {
+    // Ueber den Feldern standen aufgeklappte Anleitungen: wo man bei
+    // welchem Anbieter klickt, warum ein Unterkonto in seinem Ordner
+    // sitzt, was die DNS-Zone damit zu tun hat. Alles richtig, alles
+    // ungelesen - eine Wand liest niemand, und danach sucht man
+    // trotzdem, welche Angabe in welches Feld gehoert. Jetzt steht in
+    // jedem Feld ein Beispiel, an dem sich das ablesen laesst.
     $view = (string) file_get_contents(
         dirname(__DIR__) . '/public_html/app/Views/admin/deploy.php'
     );
+    $formular = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Views/partials/hosting-form.php'
+    );
+    $fragebogen = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Views/admin/create.php'
+    );
 
-    ok(!str_contains($view, 'ein eigener Zugang je Subdomain ist nicht nötig'),
-        'Der irrefuehrende Satz ist weg');
-    ok(str_contains($view, 'sitzt bereits in seinem Ordner'),
-        'Stattdessen steht dort, was ein Unterkonto besonders macht');
+    foreach (['Veroeffentlichen' => $view, 'Hosting-Zugang' => $formular,
+              'Fragebogen' => $fragebogen] as $wo => $inhalt) {
+        ok(!str_contains($inhalt, 'Wo finde ich die Zugangsdaten'),
+            'Keine Anleitung mehr (' . $wo . ')');
+        ok(!str_contains($inhalt, "\$info['steps']"),
+            'Und keine Schrittliste (' . $wo . ')');
+    }
+
+    // Die Beispiele: genau die Form, die er sucht.
+    foreach (['Veroeffentlichen' => $view, 'Hosting-Zugang' => $formular,
+              'Fragebogen' => $fragebogen] as $wo => $inhalt) {
+        ok(str_contains($inhalt, 'placeholder="domain.com"'),
+            'Server zeigt domain.com (' . $wo . ')');
+        ok(str_contains($inhalt, 'placeholder="benutzer@domain.com"'),
+            'Benutzername zeigt benutzer@domain.com (' . $wo . ')');
+    }
+
+    // Und die Vorgaben, mit denen es bei ihm stimmt.
+    ok(str_contains($view, "\$protocol = (string) (\$target['protocol'] ?? 'ftp')"),
+        'FTP ist die Vorgabe');
+    ok(str_contains($view, "\$target['remote_path'] ?? '/'"),
+        'Und das Verzeichnis ist "/"');
+    ok(str_contains($formular, "\$k['port'] ?? 21"), 'Port 21 im Hosting-Formular');
+    ok(str_contains($formular, "\$k['protocol'] ?? 'ftp'"), 'FTP im Hosting-Formular');
+
+    $anbieter = require dirname(__DIR__) . '/public_html/app/Support/providers.php';
+
+    foreach (['cpanel', 'godaddy'] as $name) {
+        is('ftp', (string) $anbieter['hosting'][$name]['protocol'],
+            $name . ': FTP ist die Vorgabe');
+        is(21, (int) $anbieter['hosting'][$name]['port'], $name . ': Port 21');
+        is('/', (string) $anbieter['hosting'][$name]['path'], $name . ': Verzeichnis /');
+        ok(!isset($anbieter['hosting'][$name]['steps']),
+            $name . ': die Anleitung ist auch aus den Daten weg');
+    }
+
+    // Beim Domain-Umzug bleibt die Anleitung - dort ist sie der Inhalt
+    // der Seite und nicht die Wand vor dem Formular.
+    ok(isset($anbieter['registrar']['godaddy']['authcode']),
+        'Der Domain-Assistent behaelt seine Angaben');
 
     // Und die Felder muessen so heissen, wie das JavaScript sie sucht -
     // sonst folgt der Port der Uebertragungsart nicht, und Port 21 gegen
@@ -3520,28 +3562,39 @@ test('Der Hinweis im Formular widerspricht cPanel nicht mehr', function (): void
         'Das JavaScript sucht nicht mehr nach einer ID, die es nur auf einer Seite gibt');
     ok(str_contains($js, 'initFtpPortFollowsProtocol'),
         'Und der Port folgt der Uebertragungsart');
+});
 
-    // Der Anbietereintrag muss die beiden Tatsachen nennen, an denen es
-    // tatsaechlich haengt.
-    $anbieter = require dirname(__DIR__) . '/public_html/app/Support/providers.php';
-    $godaddy = $anbieter['hosting']['godaddy'];
+// ==================================================================
+test('Die Anbieterliste schreibt nichts in fremde Felder', function (): void {
+    // Der stille Fehler: data-hosting-select trugen zwei ganz
+    // verschiedene Listen - die Anbieterliste im Fragebogen, deren
+    // Zeilen Vorgaben mitbringen, und die Liste der hinterlegten
+    // Hosting-Zugaenge auf der Veroeffentlichen-Seite, deren Zeilen
+    // keine haben. Fuer den zweiten Fall standen Ersatzwerte da, und
+    // so schrieb die Funktion bei jedem Seitenaufruf SFTP, Port 22 und
+    // /public_html ueber das Gespeicherte. Wer FTP auf Port 21
+    // eintrug, sah nach dem Neuladen 22 - und der Verbindungstest lief
+    // gegen einen SSH-Dienst, der dort nicht horcht.
+    $js = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/admin/admin.js');
 
-    $text = implode(' ', $godaddy['steps']) . ' ' . $godaddy['note'];
+    ok(!str_contains($js, "option.dataset.protocol ?? 'sftp'"),
+        'Kein Ersatzwert fuer die Uebertragungsart mehr');
+    ok(!str_contains($js, "option.dataset.port ?? '22'"), 'Keiner fuer den Port');
+    ok(!str_contains($js, "option.dataset.path ?? '/public_html'"), 'Und keiner fuer das Verzeichnis');
+    ok(str_contains($js, 'if (feld && !feld.dataset.touched && wert)'),
+        'Uebernommen wird nur, was die Zeile mitbringt');
 
-    // Hier stand vorher, cPanel lege den Namen "nie" an. GoDaddy zeigt
-    // ihn aber sehr wohl an - nur fuehrt die DNS-Zone den Eintrag nicht
-    // immer. Ein Werkzeug, das dem Anbieter widerspricht, hat zu
-    // erklaeren warum, nicht zu behaupten, der Anbieter irre sich.
-    ok(!str_contains($text, 'Diesen Namen gibt es bei cPanel nicht'),
-        'Kein Absolutum mehr ueber den ftp-Namen');
-    ok(str_contains($text, 'DNS-Zone'),
-        'Sondern die Bedingung: es braucht den DNS-Eintrag');
-    ok(str_contains($text, 'explicit FTPS'),
-        'Und GoDaddys eigener Hinweis auf verschluesseltes FTP steht drin');
-    is('ftps', (string) $godaddy['protocol'],
-        'Verschluesselt ist die Vorgabe - derselbe Port, kein Klartextpasswort');
-    ok(str_contains($text, 'festgenagelt'),
-        'Und dass ein Unterkonto in seinem Ordner sitzt');
+    // Und die Liste der Zugaenge traegt die Kennzeichnung gar nicht mehr.
+    $view = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Views/admin/deploy.php'
+    );
+
+    ok(!str_contains($view, 'data-hosting-select'),
+        'Die Zugangsliste ist keine Anbieterliste');
+    ok(str_contains(
+        (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Views/admin/create.php'),
+        'data-hosting-select'
+    ), 'Im Fragebogen bleibt sie, wo sie hingehoert');
 });
 
 // ==================================================================

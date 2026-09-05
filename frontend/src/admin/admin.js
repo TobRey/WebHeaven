@@ -451,10 +451,30 @@ function contrastWithWhite(hex) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Hosting-Anbieter: Hilfe und Voreinstellungen umschalten             */
+/* Hosting-Anbieter: Voreinstellungen uebernehmen                      */
 /* ------------------------------------------------------------------ */
 
-function initHostingHelp() {
+/**
+ * Die Auswahl des Anbieters belegt Uebertragungsart, Port und
+ * Verzeichnis vor.
+ *
+ * Gesucht wird ueber data-ftp-field und nicht ueber feste IDs: Die
+ * Felder heissen im Erfassungsformular ftp_protocol und auf der
+ * Veroeffentlichen-Seite protocol. Solange hier IDs standen, tat
+ * diese Funktion auf der zweiten Seite schlicht nichts.
+ *
+ * Uebernommen wird nur, was die gewaehlte Zeile auch mitbringt.
+ * Vorher standen hier Ersatzwerte ("?? 'sftp'", "?? '22'"), und auf
+ * der Veroeffentlichen-Seite traegt dieselbe Kennzeichnung eine ganz
+ * andere Liste: die der hinterlegten Hosting-Zugaenge. Deren Zeilen
+ * bringen nichts mit - also schrieb diese Funktion dort bei jedem
+ * Seitenaufruf SFTP, Port 22 und /public_html in die Felder, ueber
+ * das Gespeicherte hinweg. Wer FTP auf Port 21 eintrug und die Seite
+ * neu lud, sah 22 und bekam einen Test, der gegen einen SSH-Dienst
+ * lief. Ein Formular, das die eigene Eingabe still ueberschreibt, ist
+ * schlimmer als eines, das gar nichts vorschlaegt.
+ */
+function initHostingDefaults() {
   const select = document.querySelector('[data-hosting-select]');
   if (!select) return;
 
@@ -462,26 +482,14 @@ function initHostingHelp() {
     const option = select.selectedOptions[0];
     if (!option) return;
 
-    document.querySelectorAll('[data-hosting-help]').forEach((help) => {
-      help.hidden = help.dataset.hostingHelp !== select.value;
+    const felder = { protocol: 'protocol', port: 'port', path: 'path' };
+
+    Object.entries(felder).forEach(([name, schluessel]) => {
+      const feld = ftpField(name);
+      const wert = option.dataset[schluessel];
+
+      if (feld && !feld.dataset.touched && wert) feld.value = wert;
     });
-
-    // Übertragungsart, Port und Verzeichnis passend vorbelegen – der
-    // Benutzer kann sie danach immer noch ändern.
-    //
-    // Gesucht wird über data-ftp-field und nicht über feste IDs: Die
-    // Felder heissen im Erfassungsformular ftp_protocol und auf der
-    // Veröffentlichen-Seite protocol. Solange hier IDs standen, tat
-    // diese Funktion auf der zweiten Seite schlicht nichts – ein
-    // Wechsel auf SFTP liess den Port auf 21 stehen, und der Test
-    // scheiterte an Port 21 gegen einen SSH-Dienst.
-    const protocol = ftpField('protocol');
-    const port = ftpField('port');
-    const path = ftpField('path');
-
-    if (protocol && !protocol.dataset.touched) protocol.value = option.dataset.protocol ?? 'sftp';
-    if (port && !port.dataset.touched) port.value = option.dataset.port ?? '22';
-    if (path && !path.dataset.touched) path.value = option.dataset.path ?? '/public_html';
   };
 
   ['protocol', 'port', 'path'].forEach((name) => {
@@ -723,7 +731,7 @@ function boot() {
   initSubmitGuards();
   initToggles();
   initColours();
-  initHostingHelp();
+  initHostingDefaults();
   initFtpPortFollowsProtocol();
   initTableLabels();
   initDialogs();

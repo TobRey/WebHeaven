@@ -306,7 +306,6 @@ foreach ($diagnostics as $check) {
  * acht Websites acht Gelegenheiten, beim nächsten Passwortwechsel eine
  * zu vergessen, und die fällt erst beim nächsten Hochladen auf.
  */
-$anbieter = require APP_DIR . '/Support/providers.php';
 ?>
 <section class="wa-panel" id="hosting">
     <header class="wa-panel__head">
@@ -376,7 +375,6 @@ $anbieter = require APP_DIR . '/Support/providers.php';
                 'inhalt' => View_partial('partials/hosting-form', [
                     'konto' => $h,
                     'base' => $base,
-                    'anbieter' => $anbieter,
                 ]),
             ]) ?>
         <?php endforeach; ?>
@@ -392,7 +390,6 @@ $anbieter = require APP_DIR . '/Support/providers.php';
         <?= View_partial('partials/hosting-form', [
             'konto' => [],
             'base' => $base,
-            'anbieter' => $anbieter,
         ]) ?>
     </details>
 </section>

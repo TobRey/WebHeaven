@@ -504,27 +504,12 @@ $invalid = static fn (string $key): string
             </select>
         </div>
 
-        <?php foreach ($providers['hosting'] as $key => $info): ?>
-            <details class="wa-help" data-hosting-help="<?= e($key) ?>"
-                     <?= $v('hosting_provider', 'other') === $key ? '' : 'hidden' ?>>
-                <summary>Wo finde ich die Zugangsdaten bei <?= e($info['name']) ?>?</summary>
-                <div class="wa-help__body">
-                    <ol>
-                        <?php foreach ($info['steps'] as $step): ?>
-                            <li><?= $step /* fest im Code hinterlegt, kein Benutzertext */ ?></li>
-                        <?php endforeach; ?>
-                    </ol>
-                    <p><?= $info['note'] ?></p>
-                </div>
-            </details>
-        <?php endforeach; ?>
-
         <div class="wa-grid-2">
             <div class="wa-field">
                 <label class="wa-label" for="ftp_protocol">Übertragungsart</label>
                 <select class="wa-select" id="ftp_protocol" name="ftp_protocol">
                     <?php foreach (Brief::PROTOCOLS as $key => $label): ?>
-                        <option value="<?= e($key) ?>"<?= $v('ftp_protocol', 'sftp') === $key ? ' selected' : '' ?>>
+                        <option value="<?= e($key) ?>"<?= $v('ftp_protocol', 'ftp') === $key ? ' selected' : '' ?>>
                             <?= e($label) ?>
                         </option>
                     <?php endforeach; ?>
@@ -535,7 +520,7 @@ $invalid = static fn (string $key): string
             <div class="wa-field">
                 <label class="wa-label" for="ftp_host">Server</label>
                 <input class="wa-input" type="text" id="ftp_host" name="ftp_host" maxlength="190"
-                       placeholder="ftp.beispiel.ch" spellcheck="false" autocomplete="off"
+                       placeholder="domain.com" spellcheck="false" autocomplete="off"
                        value="<?= e($v('ftp_host')) ?>"<?= $invalid('ftp_host') ?>>
                 <?= $err('ftp_host') ?>
             </div>
@@ -543,14 +528,14 @@ $invalid = static fn (string $key): string
             <div class="wa-field">
                 <label class="wa-label" for="ftp_port">Port</label>
                 <input class="wa-input" type="number" id="ftp_port" name="ftp_port" min="1" max="65535"
-                       value="<?= e($v('ftp_port', '22')) ?>"<?= $invalid('ftp_port') ?>>
+                       value="<?= e($v('ftp_port', '21')) ?>"<?= $invalid('ftp_port') ?>>
                 <?= $err('ftp_port') ?>
             </div>
 
             <div class="wa-field">
                 <label class="wa-label" for="ftp_username">Benutzername</label>
                 <input class="wa-input" type="text" id="ftp_username" name="ftp_username" maxlength="190"
-                       autocomplete="off" spellcheck="false"
+                       placeholder="benutzer@domain.com" autocomplete="off" spellcheck="false"
                        value="<?= e($v('ftp_username')) ?>"<?= $invalid('ftp_username') ?>>
                 <?= $err('ftp_username') ?>
             </div>
@@ -566,8 +551,8 @@ $invalid = static fn (string $key): string
             <div class="wa-field">
                 <label class="wa-label" for="ftp_path">Zielverzeichnis</label>
                 <input class="wa-input" type="text" id="ftp_path" name="ftp_path" maxlength="255"
-                       placeholder="/public_html" spellcheck="false"
-                       value="<?= e($v('ftp_path', '/public_html')) ?>"<?= $invalid('ftp_path') ?>>
+                       placeholder="/" spellcheck="false"
+                       value="<?= e($v('ftp_path', '/')) ?>"<?= $invalid('ftp_path') ?>>
                 <?= $err('ftp_path') ?>
             </div>
         </div>
