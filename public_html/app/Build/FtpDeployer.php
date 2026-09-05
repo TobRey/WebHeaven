@@ -1765,24 +1765,58 @@ final class FtpDeployer
 
         $inhalt = self::inhaltOben($verbindung, $daHeim);
 
-        // Meldet der Server im Passivmodus eine interne Adresse - auf
-        // geteiltem Hosting hinter NAT die Regel -, laeuft die
-        // Datenverbindung ins Leere und sieht aus wie eine Zeitueber-
-        // schreitung. Dann noch einmal, mit der Adresse, die wir kennen.
-        //
-        // Nur wenn das Lesen wirklich gescheitert ist. Ein leerer Ordner
-        // ist kein Fehler und braucht keinen zweiten Versuch.
-        if (!$inhalt['gelesen'] && defined('FTP_USEPASVADDRESS')) {
-            @ftp_set_option($verbindung, FTP_USEPASVADDRESS, false);
-            $inhalt = self::inhaltOben($verbindung, $daHeim);
+        /**
+         * Nach einem gescheiterten Datentransfer ist die Leitung hin.
+         *
+         * Nachgemessen gegen einen echten FTPS-Server: Bricht eine
+         * Uebertragung ab, liegt der Steuerkanal danach um eine Antwort
+         * versetzt. ftp_chdir bekommt das "226 Fertig" des vorigen
+         * Befehls und meldet false, ftp_pwd bekommt das "250 Ok" von
+         * chdir und meldet false. Jede Stufe nach dem ersten Fehlschlag
+         * war damit erfunden - der Zielordner "gibt es nicht", obwohl
+         * der Server ihn zwei Zeilen weiter mit 250 bestaetigt hatte.
+         *
+         * Ohne Verschluesselung tritt das nicht auf; mit ist es der
+         * Normalfall, weil viele FTP-Server die Datenverbindung ohne
+         * sauberen TLS-Abschluss schliessen.
+         *
+         * Also: ab hier auf einer frischen Leitung weiterarbeiten.
+         */
+        if (!$inhalt['gelesen']) {
+            $neu = self::neueLeitung($verbindung, $host, $port, $user, $password, $verschluesselt);
 
-            if ($inhalt['gelesen']) {
-                $stufen[] = self::stufe(
-                    'Passivadresse',
-                    true,
-                    'Der Server nannte im Passivmodus eine interne Adresse. '
-                    . 'Ich habe stattdessen die bekannte verwendet - das ist beim Hochladen genauso noetig.'
-                );
+            if ($neu === null) {
+                $stufen[] = self::stufe('Inhalt lesen', false, self::inhaltMeldung($inhalt, $daHeim));
+                $stufen[] = self::stufe('Neue Leitung', false,
+                    'Nach dem Fehlschlag liess sich keine zweite Verbindung aufbauen. '
+                    . 'Mehr laesst sich von hier aus nicht feststellen.');
+
+                return self::pruefErgebnis(false, self::inhaltMeldung($inhalt, $daHeim), [], '', $stufen);
+            }
+
+            $verbindung = $neu;
+
+            // Meldet der Server im Passivmodus eine interne Adresse - auf
+            // geteiltem Hosting hinter NAT die Regel -, laeuft die
+            // Datenverbindung ins Leere. Dann noch einmal, mit der
+            // Adresse, die wir kennen. Auf der frischen Leitung.
+            if (defined('FTP_USEPASVADDRESS')) {
+                @ftp_set_option($verbindung, FTP_USEPASVADDRESS, false);
+                $zweiter = self::inhaltOben($verbindung, $daHeim);
+
+                if ($zweiter['gelesen']) {
+                    $inhalt = $zweiter;
+                    $stufen[] = self::stufe(
+                        'Passivadresse',
+                        true,
+                        'Der Server nannte im Passivmodus eine interne Adresse. '
+                        . 'Ich habe stattdessen die bekannte verwendet - das ist beim '
+                        . 'Hochladen genauso noetig.'
+                    );
+                } else {
+                    $verbindung = self::neueLeitung($verbindung, $host, $port, $user, $password, $verschluesselt)
+                        ?? $verbindung;
+                }
             }
         }
 
@@ -1807,7 +1841,23 @@ final class FtpDeployer
             $stufen[] = self::merkmalStufe($verbindung, $verschluesselt);
         }
 
-        $ordner = self::verzeichnisseFtp($verbindung, $pfad, $daHeim);
+        /**
+         * Erst fragen, was zaehlt - erkundet wird ganz zuletzt.
+         *
+         * Vorher stand das Erkunden hier oben, und es hat den Test
+         * ueber verschluesselte Verbindungen zuverlaessig ruiniert:
+         * verzeichnisseFtp probiert der Reihe nach Pfade durch, die es
+         * meist nicht gibt. Jeder Fehlversuch bricht eine Datenver-
+         * bindung ab, und danach liegt der Steuerkanal um eine Antwort
+         * versetzt (gemessen). Die naechste Frage - "gibt es den
+         * Zielordner?" - bekam dann die Antwort der vorletzten und
+         * meldete "gibt es nicht", waehrend der Server zwei Zeilen
+         * weiter unten "250 Ok" gesagt hatte.
+         *
+         * Also: chdir und Schreibprobe zuerst, auf der unversehrten
+         * Leitung. Das Erkunden kommt danach, auf einer frischen - und
+         * nur dann, wenn es etwas vorzuschlagen gibt.
+         */
         $vorhanden = @ftp_chdir($verbindung, $pfad);
 
         $stufen[] = self::stufe(
@@ -1839,6 +1889,20 @@ final class FtpDeployer
                     ? 'Datei angelegt und wieder entfernt - der Zugang darf schreiben.'
                     : self::schreibHilfe($pfad)
             );
+        }
+
+        // Jetzt erst erkunden - und nur, wenn ein Vorschlag gebraucht
+        // wird. Steht der Ordner, ist die Liste nur Beiwerk und das
+        // Risiko einer zerschossenen Leitung nicht wert.
+        $ordner = [];
+
+        if (!$vorhanden) {
+            $frisch = self::neueLeitung($verbindung, $host, $port, $user, $password, $verschluesselt);
+
+            if ($frisch !== null) {
+                $verbindung = $frisch;
+                $ordner = self::verzeichnisseFtp($verbindung, $pfad, $daHeim);
+            }
         }
 
         @ftp_close($verbindung);
@@ -1925,30 +1989,90 @@ final class FtpDeployer
      */
     private static function inhaltOben($verbindung, string $heim): array
     {
-        $roh = @ftp_nlist($verbindung, $heim);
-
-        if ($roh === false) {
-            $roh = @ftp_rawlist($verbindung, $heim);
-
-            // Aus einer rohen Zeile ("drwxr-xr-x 2 user group 4096 Sep 5
-            // 12:00 assets") wird nur der Name gebraucht.
-            if (is_array($roh)) {
-                $roh = array_map(
-                    static fn (string $zeile): string => (string) preg_replace(
-                        '/^(?:[\w-]{10}\s+\S+\s+\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s+)/',
-                        '',
-                        $zeile
-                    ),
-                    array_filter($roh, static fn ($z): bool => is_string($z) && !str_starts_with($z, 'total '))
-                );
+        // Was PHP dabei bemaengelt, ist die halbe Diagnose: "SSL read
+        // failed" ist ein anderes Gespraech mit dem Hoster als
+        // "php_connect_nonb() failed". Ohne das Einfangen landet der
+        // Satz im Fehlerprotokoll des Servers - also dort, wo ihn
+        // niemand sucht.
+        $grund = '';
+        $sammeln = static function (int $n, string $text) use (&$grund): bool {
+            if ($grund === '') {
+                $grund = trim((string) preg_replace('/^ftp_\w+\(\):\s*/', '', $text));
             }
+
+            return true;
+        };
+
+        set_error_handler($sammeln);
+
+        try {
+            $roh = ftp_nlist($verbindung, $heim);
+
+            // Manche Server antworten auf NLST in einem leeren Ordner mit
+            // einem Fehler statt mit einer leeren Liste. LIST fragt
+            // dasselbe noch einmal anders.
+            if ($roh === false) {
+                $roh = self::ausRohzeilen(ftp_rawlist($verbindung, $heim));
+            }
+        } finally {
+            restore_error_handler();
         }
 
         if ($roh === false) {
-            return ['gelesen' => false, 'namen' => []];
+            return ['gelesen' => false, 'namen' => [], 'grund' => $grund];
         }
 
-        return ['gelesen' => true, 'namen' => self::nurNamen((array) $roh)];
+        return ['gelesen' => true, 'namen' => self::nurNamen((array) $roh), 'grund' => ''];
+    }
+
+    /**
+     * Eine frische Leitung, weil die alte nichts mehr taugt.
+     *
+     * Aufgemacht wird genau wie beim ersten Mal - dieselben Angaben,
+     * derselbe Passivmodus. Geht das nicht, gibt es null; dann ist auch
+     * nichts mehr zu messen.
+     *
+     * @return resource|\FTP\Connection|null
+     */
+    private static function neueLeitung(
+        $alt,
+        string $host,
+        int $port,
+        string $user,
+        string $password,
+        bool $verschluesselt
+    ) {
+        // Dieselbe Wache wie beim ersten Verbinden. Ohne die FTP-
+        // Erweiterung ist ein Aufruf hier kein Fehler, den man melden
+        // kann, sondern ein Absturz - und ein privater Helfer soll sich
+        // nicht darauf verlassen, dass der Aufrufer schon nachgesehen hat.
+        if (!function_exists('ftp_connect')) {
+            return null;
+        }
+
+        if ($verschluesselt && !function_exists('ftp_ssl_connect')) {
+            return null;
+        }
+
+        @ftp_close($alt);
+
+        $neu = $verschluesselt
+            ? @ftp_ssl_connect($host, $port, 15)
+            : @ftp_connect($host, $port, 15);
+
+        if ($neu === false) {
+            return null;
+        }
+
+        if (!@ftp_login($neu, $user, $password)) {
+            @ftp_close($neu);
+
+            return null;
+        }
+
+        @ftp_pasv($neu, true);
+
+        return $neu;
     }
 
     /**
@@ -2077,6 +2201,39 @@ final class FtpDeployer
     }
 
     /**
+     * Aus den rohen Zeilen von LIST die Namen holen.
+     *
+     * Eine Zeile sieht aus wie
+     * "drwxr-xr-x 2 web web 4096 Sep 5 12:00 assets" - gebraucht wird
+     * nur das letzte Feld.
+     *
+     * @param array<int, string>|false $zeilen
+     * @return array<int, string>|false
+     */
+    private static function ausRohzeilen($zeilen)
+    {
+        if (!is_array($zeilen)) {
+            return false;
+        }
+
+        $namen = [];
+
+        foreach ($zeilen as $zeile) {
+            $zeile = trim((string) $zeile);
+
+            if ($zeile === '' || str_starts_with($zeile, 'total ')) {
+                continue;
+            }
+
+            $felder = preg_split('/\s+/', $zeile, 9);
+
+            $namen[] = (is_array($felder) && count($felder) === 9) ? $felder[8] : $zeile;
+        }
+
+        return $namen;
+    }
+
+    /**
      * Aus Pfaden Namen machen, ohne "." und "..".
      *
      * @param array<int, mixed> $eintraege
@@ -2105,9 +2262,27 @@ final class FtpDeployer
     private static function inhaltMeldung(array $inhalt, string $heim): string
     {
         if (!$inhalt['gelesen']) {
-            return 'Der Startordner liess sich nicht auflisten - meist eine blockierte '
-                . 'Datenverbindung. Steht eine Firewall dazwischen, hilft oft die '
-                . 'Verbindungsart „FTP mit Verschluesselung“ oder ein anderer Port.';
+            $grund = (string) ($inhalt['grund'] ?? '');
+
+            // Der Wortlaut von PHP gehoert dazu. "SSL read failed" heisst
+            // etwas anderes als "php_connect_nonb() failed", und wer das
+            // an den Hoster weiterreicht, bekommt eine andere Antwort als
+            // auf "geht nicht".
+            $satz = 'Der Startordner liess sich nicht auflisten';
+
+            if ($grund !== '') {
+                $satz .= ' (' . $grund . ')';
+            }
+
+            if (stripos($grund, 'ssl') !== false || stripos($grund, 'tls') !== false) {
+                return $satz . '. Der Abbruch kommt aus der Verschluesselung, nicht aus '
+                    . 'dem Netz: Viele cPanel-Server verlangen, dass die Datenverbindung '
+                    . 'die TLS-Sitzung der Steuerverbindung wiederverwendet - das kann PHP '
+                    . 'nicht. Stell die Verbindungsart einmal auf „FTP“ ohne '
+                    . 'Verschluesselung um; laeuft es dann durch, war es genau das.';
+            }
+
+            return $satz . '. Die naechste Zeile sagt, woran es lag.';
         }
 
         if ($inhalt['namen'] === []) {

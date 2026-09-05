@@ -3423,9 +3423,13 @@ test('Ein leerer Ordner ist kein Netzwerkfehler', function (): void {
         ['gelesen' => true, 'namen' => ['index.html', 'assets']], '/');
     ok(str_contains($voll, '2 Eintraege'), 'Zwei Eintraege werden gezaehlt');
 
-    $tot = (string) $meldung->invoke(null, ['gelesen' => false, 'namen' => []], '/');
-    ok(str_contains($tot, 'Datenverbindung'),
-        'Ein echter Fehlschlag heisst weiterhin so');
+    // Der Fehlschlag selbst bleibt ein Fehlschlag - die Begruendung
+    // steht seit der Datenverbindungs-Stufe eine Zeile tiefer.
+    $tot = (string) $meldung->invoke(null,
+        ['gelesen' => false, 'namen' => [], 'grund' => ''], '/');
+
+    ok(str_contains($tot, 'nicht auflisten'), 'Ein echter Fehlschlag heisst weiterhin so');
+    ok(str_contains($tot, 'naechste Zeile'), 'Und verweist auf die Zeile mit der Ursache');
 
     // Und die Namensliste muss "." und ".." draussen lassen.
     $namen = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'nurNamen');
@@ -3473,6 +3477,59 @@ test('Bei toter Datenverbindung wird nachgemessen statt vermutet', function (): 
         'Ein abgewiesener Port wird beim Namen genannt');
     ok(str_contains($quelle, "ftp_raw(\$verbindung, 'FEAT')"),
         'Und der Server wird gefragt, was er kann');
+});
+
+// ==================================================================
+test('Nach einem Abbruch wird nicht auf derselben Leitung weitergefragt', function (): void {
+    // Gemessen gegen einen echten FTPS-Server: Bricht eine Uebertragung
+    // ab, liegt der Steuerkanal danach um eine Antwort versetzt.
+    // ftp_chdir bekommt das "226 Fertig" des vorigen Befehls und meldet
+    // false, ftp_pwd bekommt dessen "250 Ok" und meldet ebenfalls false.
+    // Jede Stufe nach dem ersten Fehlschlag war damit erfunden: Der
+    // Zielordner "gibt es nicht", obwohl der Server ihn eine Zeile
+    // spaeter mit 250 bestaetigt. Ohne Verschluesselung tritt das nicht
+    // auf - mit ist es der Normalfall.
+    $quelle = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
+    );
+
+    ok(str_contains($quelle, 'private static function neueLeitung('),
+        'Es gibt einen Weg, frisch zu verbinden');
+    ok(str_contains($quelle, 'self::neueLeitung($verbindung, $host, $port, $user, $password, $verschluesselt)'),
+        'Nach einem gescheiterten Auflisten wird er auch benutzt');
+
+    // Und die Reihenfolge: erst urteilen, dann erkunden.
+    //
+    // verzeichnisseFtp probiert Pfade durch, die es meist nicht gibt -
+    // jeder Fehlversuch bricht eine Datenverbindung ab. Stand das vor
+    // dem chdir, war das Urteil ueber den Zielordner geraten.
+    $chdir = strpos($quelle, '$vorhanden = @ftp_chdir($verbindung, $pfad);');
+    $probe = strpos($quelle, "'Schreibprobe',");
+    $erkunden = strpos($quelle, '$ordner = self::verzeichnisseFtp($verbindung, $pfad, $daHeim);');
+
+    ok($chdir !== false && $erkunden !== false, 'Beide Stellen gibt es');
+    ok($erkunden > $chdir, 'Erkundet wird erst nach dem Urteil ueber den Zielordner');
+    ok($erkunden > $probe, 'Und erst nach der Schreibprobe');
+    ok(str_contains($quelle, "if (!\$vorhanden) {\n            \$frisch = self::neueLeitung("),
+        'Erkundet wird nur bei Bedarf, und auf frischer Leitung');
+
+    // Der Wortlaut von PHP gehoert in die Meldung: "SSL read failed"
+    // ist ein anderes Gespraech mit dem Hoster als "connect failed".
+    $meldung = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'inhaltMeldung');
+    $meldung->setAccessible(true);
+
+    $tls = (string) $meldung->invoke(null,
+        ['gelesen' => false, 'namen' => [], 'grund' => 'SSL read failed'], '/');
+
+    ok(str_contains($tls, 'SSL read failed'), 'Der Wortlaut steht in der Meldung');
+    ok(str_contains($tls, 'TLS-Sitzung'), 'Und wird als TLS-Sache erklaert');
+    ok(str_contains($tls, 'ohne') && str_contains($tls, 'Verschluesselung'),
+        'Mit dem naechsten Schritt: einmal ohne Verschluesselung probieren');
+
+    $netz = (string) $meldung->invoke(null,
+        ['gelesen' => false, 'namen' => [], 'grund' => 'php_connect_nonb() failed'], '/');
+
+    ok(!str_contains($netz, 'TLS-Sitzung'), 'Ein Netzfehler wird nicht TLS angelastet');
 });
 
 // ==================================================================
