@@ -229,6 +229,17 @@
   background: var(--wa-surface-2);
 }
 
+/* Der Umschalter hell/dunkel.
+ *
+ * Gezeigt wird das Sinnbild dessen, was der Klick bringt: im Dunkeln
+ * die Sonne, im Hellen der Mond. Beide liegen im HTML, damit beim
+ * Umschalten nichts nachgeladen werden muss. */
+.wa-theme-switch__icon { display: contents; }
+.wa-theme-switch__icon--moon { display: none; }
+
+:root[data-theme='light'] .wa-theme-switch__icon--sun { display: none; }
+:root[data-theme='light'] .wa-theme-switch__icon--moon { display: contents; }
+
 .wa-admin__link[aria-current='page'] .wa-admin__zeichen--dringend {
   background: color-mix(in srgb, var(--wa-danger) 28%, var(--wa-surface-2));
 }
@@ -435,8 +446,15 @@
 .wa-table tbody tr:hover { background: var(--wa-surface-glass); }
 
 .wa-table td.is-wide { min-inline-size: 18rem; }
-.wa-table a { color: var(--wa-text-strong); text-decoration: none; }
-.wa-table a:hover { color: var(--wa-accent); }
+/* Der Doppelpunkt-nicht ist der ganze Witz.
+ *
+ * "\.wa-table a" ist genauer als "\.wa-btn" und gewann deshalb auch
+ * gegen Knoepfe in Tabellen. Im Dunkeln fiel das nie auf: Dort ist
+ * text-strong weiss, und weiss auf Indigo stimmt zufaellig. Im Hellen
+ * wird daraus fast schwarz auf dunklem Indigo - 1.63:1, der Knopf
+ * "Oeffnen" war schlicht nicht mehr zu lesen. */
+.wa-table a:not(.wa-btn) { color: var(--wa-text-strong); text-decoration: none; }
+.wa-table a:not(.wa-btn):hover { color: var(--wa-accent); }
 
 /* ================================================================== */
 /* Zustandsmarken                                                      */
@@ -1973,7 +1991,9 @@ fieldset.wa-fieldset { border: 1px solid var(--wa-border); margin: 0; }
 tr.is-inactive { opacity: 0.55; }
 
 .wa-warn { color: var(--wa-danger); }
-.wa-ok { color: var(--wa-secondary); font-size: var(--wa-text-sm); }
+/* Tuerkis erreicht auf Weiss nur 3.93:1 - und "bezahlt" ist ohnehin
+   keine Markenfarbe, sondern eine Erfolgsmeldung. */
+.wa-ok { color: var(--wa-success); font-size: var(--wa-text-sm); }
 
 /* Das Haekchen "bezahlt". Gross genug zum Treffen, auch mit dem
    Daumen - hier wird oft und schnell geklickt. */
@@ -2027,9 +2047,20 @@ tr.is-inactive { opacity: 0.55; }
   border-block-start: 1px solid var(--wa-border);
 }
 
+/* Rot auf Indigo, in beiden Modi.
+ *
+ * Gesetzt waren nur Rahmen und Schrift, der Grund blieb der volle
+ * Akzent aus .wa-btn stehen - gemeint war offensichtlich ein Knopf
+ * mit Umriss. So gelesen hat er 1.8:1 gehabt, und "Loeschen" ist der
+ * eine Knopf, bei dem man genau hinsehen will. */
 .wa-btn--danger {
-  border-color: var(--wa-danger);
-  color: var(--wa-danger);
+  --btn-bg: transparent;
+  --btn-fg: var(--wa-danger);
+  --btn-border: var(--wa-danger);
+}
+
+.wa-btn--danger:hover {
+  --btn-bg: color-mix(in srgb, var(--wa-danger) 12%, transparent);
 }
 
 .wa-btn--small {

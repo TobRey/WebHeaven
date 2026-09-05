@@ -721,8 +721,67 @@ function initVault() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Hell oder dunkel                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Der Umschalter unten in der Leiste.
+ *
+ * Gesetzt wird die Wahl schon im <head>, damit es beim Laden nicht
+ * kurz aufblitzt - hier wird nur noch umgeschaltet und gemerkt.
+ *
+ * Derselbe Schluessel wie auf der oeffentlichen Website: Wer dort hell
+ * gewaehlt hat, findet auch das Backend hell vor. Die Wahl bleibt im
+ * Browser und verlaesst das Geraet nicht; sie gehoert zum Bildschirm,
+ * an dem man sitzt, nicht zum Konto.
+ *
+ * Der Knopf steht mit "hidden" im HTML und wird erst hier sichtbar.
+ * Ohne Javascript wuerde er sonst dastehen und nichts tun - und ein
+ * Knopf, der nichts tut, ist schlimmer als keiner.
+ */
+function initAdminTheme() {
+  const button = document.querySelector('[data-admin-theme]');
+  if (!button) return;
+
+  const root = document.documentElement;
+  const label = button.querySelector('[data-admin-theme-label]');
+
+  const apply = (theme) => {
+    if (theme === 'light') {
+      root.setAttribute('data-theme', 'light');
+    } else {
+      root.removeAttribute('data-theme');
+    }
+
+    // Beschriftet wird, was der Klick bringt.
+    if (label) label.textContent = theme === 'light' ? 'Dunkler Modus' : 'Heller Modus';
+    button.setAttribute('aria-pressed', theme === 'light' ? 'true' : 'false');
+
+    // Die Adressleiste des Handys faerbt mit.
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute('content', theme === 'light' ? '#ffffff' : '#06060f');
+  };
+
+  apply(root.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
+  button.hidden = false;
+
+  button.addEventListener('click', () => {
+    const next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    apply(next);
+
+    try {
+      localStorage.setItem('webatze-theme', next);
+    } catch {
+      // Privates Fenster: dann gilt die Wahl eben nur bis zum Neuladen.
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ */
 
 function boot() {
+  initAdminTheme();
   initSidebar();
   initFill();
   initCopy();

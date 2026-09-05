@@ -6888,4 +6888,99 @@ test('Der Aufbau haengt nicht am Pruefwert der Dateinamen', function (): void {
 });
 
 // ==================================================================
+test('Der Adminbereich kann hell', function (): void {
+    $layout = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Views/layouts/admin.php'
+    );
+
+    // Der Schalter ist da - und bleibt weg, solange kein Skript laeuft.
+    ok(str_contains($layout, 'data-admin-theme'), 'Der Umschalter steht in der Leiste');
+    ok(str_contains($layout, 'data-admin-theme hidden'),
+        'Ohne Javascript bleibt er weg statt tot dazustehen');
+
+    // Gesetzt wird die Wahl vor dem ersten Zeichnen, sonst blitzt es.
+    $kopf = substr($layout, 0, (int) strpos($layout, '</head>'));
+    ok(str_contains($kopf, "localStorage.getItem('webatze-theme')"),
+        'Die Wahl wird im Kopf gelesen, nicht erst im geladenen Skript');
+    ok(str_contains($kopf, "setAttribute('data-theme', 'light')"),
+        'Und dort auch gesetzt');
+
+    // Derselbe Schluessel wie draussen: eine Einstellung, nicht zwei.
+    $site = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Views/layouts/site.php'
+    );
+    ok(str_contains($site, "'webatze-theme'"), 'Website und Backend teilen den Schluessel');
+
+    $js = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/admin/admin.js');
+    ok(str_contains($js, 'initAdminTheme'), 'Das Skript kennt den Umschalter');
+    ok(str_contains($js, "'Dunkler Modus' : 'Heller Modus'"),
+        'Beschriftet wird, was der Klick bringt - nicht, was gerade gilt');
+
+    // Und die Farben muessen umhaengbar sein.
+    $tokens = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/styles/tokens.css');
+    ok(str_contains($tokens, ":root[data-theme='light']"), 'Es gibt eine helle Palette');
+});
+
+// ==================================================================
+test('Im Hellen bleibt lesbar, was im Dunkeln lesbar war', function (): void {
+    // Drei Stellen, an denen die Farbe aus einer Marke kam statt aus
+    // der Rolle. Im Dunkeln stimmte das zufaellig, im Hellen nicht -
+    // und "zufaellig richtig" faellt genau dann auf, wenn man einen
+    // zweiten Modus dazustellt.
+    $css = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/admin/admin.css');
+
+    // 1. Ein Knopf in einer Tabelle ist kein Tabellenverweis.
+    ok(!preg_match('/^\.wa-table a \{/m', $css),
+        'Die Regel fuer Tabellenverweise greift nicht mehr nach Knoepfen');
+    ok(str_contains($css, '.wa-table a:not(.wa-btn)'),
+        'Sondern nimmt Knoepfe ausdruecklich aus');
+
+    // 2. Der Loeschknopf war rot auf Indigo, in beiden Modi.
+    ok(str_contains($css, "--btn-fg: var(--wa-danger)"),
+        'Der Loeschknopf traegt sein Rot als Schrift');
+    ok(str_contains($css, "--btn-bg: transparent;\n  --btn-fg: var(--wa-danger)"),
+        'Und hat keinen Akzentgrund mehr darunter');
+
+    // 3. "bezahlt" ist eine Erfolgsmeldung, keine Markenfarbe.
+    ok(str_contains($css, '.wa-ok { color: var(--wa-success)'),
+        'Der Haken nimmt die Erfolgsfarbe');
+
+    // Und der leiseste Text erreicht in beiden Modi 4.5:1.
+    $tokens = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/styles/tokens.css');
+
+    ok(str_contains($tokens, '--wa-ink-450'), 'Es gibt eine Zwischenstufe fuer Dunkel');
+    ok(str_contains($tokens, '--wa-ink-550'), 'Und eine fuer Hell');
+    ok(!str_contains($tokens, '--wa-text-faint:  var(--wa-ink-500)'),
+        'ink-500 reichte in keinem der beiden Modi');
+
+    // Der Kontrast selbst, gerechnet statt geglaubt.
+    $lum = static function (string $hex): float {
+        $hex = ltrim($hex, '#');
+        $kanal = static function (int $v): float {
+            $c = $v / 255;
+            return $c <= 0.04045 ? $c / 12.92 : (float) ((($c + 0.055) / 1.055) ** 2.4);
+        };
+        return 0.2126 * $kanal((int) hexdec(substr($hex, 0, 2)))
+            + 0.7152 * $kanal((int) hexdec(substr($hex, 2, 2)))
+            + 0.0722 * $kanal((int) hexdec(substr($hex, 4, 2)));
+    };
+    $k = static fn (string $a, string $b): float => round(
+        (max($lum($a), $lum($b)) + 0.05) / (min($lum($a), $lum($b)) + 0.05),
+        2
+    );
+
+    // Hell: der leise Text auf weissem Grund.
+    ok($k('#616384', '#FFFFFF') >= 4.5,
+        'Hell: leiser Text erreicht 4.5:1 (' . $k('#616384', '#FFFFFF') . ')');
+    // Dunkel: derselbe auf der Flaeche einer Tafel.
+    ok($k('#8688A8', '#12122A') >= 4.5,
+        'Dunkel: derselbe erreicht 4.5:1 (' . $k('#8688A8', '#12122A') . ')');
+    // Und beide bleiben leiser als der gedaempfte Text darueber.
+    ok($k('#616384', '#FFFFFF') < $k('#55566E', '#FFFFFF'),
+        'Hell: leise bleibt leiser als gedaempft');
+    ok($k('#8688A8', '#12122A') < $k('#9B9CB8', '#12122A'),
+        'Dunkel: ebenso');
+});
+
+// ==================================================================
 summary();

@@ -55,7 +55,14 @@
   --wa-ink-200: #D9DAE8;
   --wa-ink-300: #B6B7CC;
   --wa-ink-400: #9B9CB8;
+  /* Zwei Zwischenstufen, damit der leiseste Text in beiden Modi noch
+     4.5:1 erreicht. Vorher stand dort in beiden Faellen ink-500, und
+     das ergab 3.83:1 auf dunklem und 4.48:1 auf hellem Grund - also
+     zweimal knapp daneben. Ein Hinweis unter einem Feld ist leise,
+     aber er soll gelesen werden koennen. */
+  --wa-ink-450: #8688A8;
   --wa-ink-500: #6E7090;
+  --wa-ink-550: #616384;
   --wa-ink-600: #55566E;
   --wa-ink-700: #33344A;
   --wa-ink-800: #1E1F33;
@@ -86,7 +93,7 @@
   --wa-text:        var(--wa-ink-100);
   --wa-text-strong: var(--wa-ink-0);
   --wa-text-muted:  var(--wa-ink-400);
-  --wa-text-faint:  var(--wa-ink-500);
+  --wa-text-faint:  var(--wa-ink-450);
   --wa-text-on-accent: var(--wa-ink-0);
   --wa-text-on-teal:   var(--wa-ink-990);
 
@@ -241,7 +248,7 @@
   --wa-text:        var(--wa-ink-950);
   --wa-text-strong: var(--wa-ink-950);
   --wa-text-muted:  var(--wa-ink-600);
-  --wa-text-faint:  var(--wa-ink-500);
+  --wa-text-faint:  var(--wa-ink-550);
   --wa-text-on-accent: var(--wa-ink-0);
   --wa-text-on-teal:   var(--wa-ink-990);
 

@@ -139,7 +139,27 @@ foreach ($unterNav as $wurzel => $eintraege) {
     <meta name="theme-color" content="#06060f">
     <link rel="icon" href="/assets/img/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="<?= e(Assets::url('admin.css')) ?>">
-    <script nonce="<?= e($nonce) ?>">document.documentElement.classList.remove('no-js');</script>
+    <?php
+    /**
+     * Hell oder dunkel, bevor das erste Bild gezeichnet wird.
+     *
+     * Steht das erst im geladenen Skript, blitzt bei jedem Seitenwechsel
+     * kurz der dunkle Entwurf auf, obwohl hell gewählt ist. Deshalb hier
+     * oben und ohne Umweg.
+     *
+     * Derselbe Schlüssel wie auf der öffentlichen Website: Wer dort hell
+     * gewählt hat, bekommt es auch hier - eine Einstellung, nicht zwei.
+     */
+    ?>
+    <script nonce="<?= e($nonce) ?>">
+        document.documentElement.classList.remove('no-js');
+        try {
+            if (localStorage.getItem('webatze-theme') === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+                document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff');
+            }
+        } catch (e) { /* privates Fenster - dann eben dunkel */ }
+    </script>
     <script type="module" src="<?= e(Assets::url('admin.js')) ?>" defer></script>
     <script nonce="<?= e($nonce) ?>">window.WA_CSRF = <?= json_out(Csrf::token()) ?>;</script>
 
@@ -210,6 +230,24 @@ foreach ($unterNav as $wurzel => $eintraege) {
     </nav>
 
     <div class="wa-admin__side-foot">
+        <?php
+        /* Beschriftet wird, was der Klick bringt - nicht, was gerade
+           gilt. "Hell" auf dunklem Grund ist eine Ansage, "Dunkel" auf
+           dunklem Grund eine Zustandsmeldung, und die liest man als
+           Ansage und drueckt zweimal. Das Umschalten selbst uebernimmt
+           das Skript; ohne Skript bleibt der Knopf weg statt tot
+           dazustehen. */
+        ?>
+        <button type="button" class="wa-admin__link wa-admin__link--button wa-theme-switch"
+                data-admin-theme hidden>
+            <span class="wa-theme-switch__icon wa-theme-switch__icon--sun">
+                <?= View_partial('partials/admin-icons', ['name' => 'sun']) ?>
+            </span>
+            <span class="wa-theme-switch__icon wa-theme-switch__icon--moon">
+                <?= View_partial('partials/admin-icons', ['name' => 'moon']) ?>
+            </span>
+            <span data-admin-theme-label>Heller Modus</span>
+        </button>
         <a class="wa-admin__link" href="/" target="_blank" rel="noopener">
             <?= View_partial('partials/admin-icons', ['name' => 'external']) ?>
             <span>Website ansehen</span>

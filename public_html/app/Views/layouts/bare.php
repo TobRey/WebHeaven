@@ -29,7 +29,20 @@ $title = $title ?? 'Anmelden';
     <meta name="theme-color" content="#06060f">
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="<?= e(Assets::url('admin.css')) ?>">
-    <script nonce="<?= e($nonce) ?>">document.documentElement.classList.remove('no-js');</script>
+    <?php /* Auch die Anmeldeseite folgt der Wahl. Sonst meldet man sich
+             auf dunklem Grund an und landet auf hellem - und der erste
+             Eindruck ist ein Ruckeln, das nach Fehler aussieht. Einen
+             Umschalter gibt es hier nicht: Vor der Anmeldung gibt es
+             nichts einzustellen. */ ?>
+    <script nonce="<?= e($nonce) ?>">
+        document.documentElement.classList.remove('no-js');
+        try {
+            if (localStorage.getItem('webatze-theme') === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+                document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff');
+            }
+        } catch (e) { /* privates Fenster - dann eben dunkel */ }
+    </script>
 </head>
 <body class="wa-bare">
     <main class="wa-bare__main">
