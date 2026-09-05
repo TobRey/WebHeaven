@@ -3439,6 +3439,43 @@ test('Ein leerer Ordner ist kein Netzwerkfehler', function (): void {
 });
 
 // ==================================================================
+test('Bei toter Datenverbindung wird nachgemessen statt vermutet', function (): void {
+    // "Meist eine blockierte Datenverbindung" ist eine Vermutung, und
+    // mit einer Vermutung geht man nicht zum Hoster - der schickt einen
+    // dann durch drei Runden Rueckfragen. Scheitert das Auflisten,
+    // schickt der Test jetzt PASV selbst, liest die genannte Adresse
+    // und klopft dort an. Abgewiesen, keine Antwort oder offen sind
+    // drei verschiedene Ursachen mit drei verschiedenen Zustaendigen.
+    $intern = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'internesNetz');
+    $intern->setAccessible(true);
+
+    foreach (['10.13.37.9', '192.168.1.50', '172.16.0.4', '127.0.0.1'] as $ip) {
+        ok($intern->invoke(null, $ip), $ip . ' gilt nur im eigenen Netz');
+    }
+
+    foreach (['132.148.182.72', '92.205.173.138', '1.1.1.1'] as $ip) {
+        ok(!$intern->invoke(null, $ip), $ip . ' ist von aussen erreichbar');
+    }
+
+    // Und die Stufe haengt an der gescheiterten Auflistung, nicht am
+    // leeren Ordner - sonst laeuft sie bei jeder frischen Website.
+    $quelle = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
+    );
+
+    ok(str_contains($quelle, "if (!\$inhalt['gelesen']) {"),
+        'Nachgemessen wird nur bei einem echten Fehlschlag');
+    ok(str_contains($quelle, "self::datenStufe(\$verbindung, \$host)"),
+        'Die Datenverbindung bekommt eine eigene Stufe');
+    ok(str_contains($quelle, "ftp_raw(\$verbindung, 'PASV')"),
+        'PASV wird selbst geschickt');
+    ok(str_contains($quelle, 'Connection refused'),
+        'Ein abgewiesener Port wird beim Namen genannt');
+    ok(str_contains($quelle, "ftp_raw(\$verbindung, 'FEAT')"),
+        'Und der Server wird gefragt, was er kann');
+});
+
+// ==================================================================
 test('Gruen gibt es erst, wenn jede Stufe gruen ist', function (): void {
     // Der Verbindungstest faerbte seine Meldung nach "ok" - und "ok"
     // beantwortet absichtlich nur, ob der Zielordner da ist. Eine

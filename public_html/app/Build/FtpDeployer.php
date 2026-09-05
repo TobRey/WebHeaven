@@ -1794,6 +1794,19 @@ final class FtpDeployer
             self::inhaltMeldung($inhalt, $daHeim)
         );
 
+        // Ist das Lesen gescheitert, wird jetzt genau nachgesehen, woran.
+        //
+        // "Meist eine blockierte Datenverbindung" ist eine Vermutung, und
+        // mit einer Vermutung geht man nicht zum Hoster. Die naechste
+        // Stufe fragt den Server selbst: Welche Adresse und welchen Port
+        // nennt er im Passivmodus, und was passiert, wenn man dort
+        // anklopft? Abgewiesen, keine Antwort oder offen - drei
+        // verschiedene Ursachen mit drei verschiedenen Zustaendigkeiten.
+        if (!$inhalt['gelesen']) {
+            $stufen[] = self::datenStufe($verbindung, $host);
+            $stufen[] = self::merkmalStufe($verbindung, $verschluesselt);
+        }
+
         $ordner = self::verzeichnisseFtp($verbindung, $pfad, $daHeim);
         $vorhanden = @ftp_chdir($verbindung, $pfad);
 
@@ -1936,6 +1949,131 @@ final class FtpDeployer
         }
 
         return ['gelesen' => true, 'namen' => self::nurNamen((array) $roh)];
+    }
+
+    /**
+     * Die Datenverbindung von Hand aufbauen und berichten, was passiert.
+     *
+     * ftp_nlist sagt nur "false". Das ist zu wenig, um jemanden damit
+     * zum Hoster zu schicken. Also PASV selbst schicken, die genannte
+     * Adresse auslesen und dort anklopfen. Was dabei herauskommt,
+     * benennt die Ursache:
+     *
+     *   verbunden       - der Weg steht; dann liegt es woanders
+     *   abgewiesen      - der Server hat den Port nicht geoeffnet
+     *   keine Antwort   - eine Firewall verschluckt die Pakete
+     *   interne Adresse - NAT: der Server nennt eine Adresse aus seinem
+     *                     eigenen Netz, die von aussen niemand erreicht
+     *
+     * @return array{name:string, ok:bool, info:string}
+     */
+    private static function datenStufe($verbindung, string $host): array
+    {
+        $antwort = @ftp_raw($verbindung, 'PASV');
+        $zeile = trim((string) ($antwort[0] ?? ''));
+
+        if (!preg_match('/\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)/', $zeile, $t)) {
+            return self::stufe(
+                'Datenverbindung',
+                false,
+                'Der Server hat auf PASV nicht wie erwartet geantwortet: '
+                . ($zeile !== '' ? $zeile : 'gar nicht')
+            );
+        }
+
+        $adresse = $t[1] . '.' . $t[2] . '.' . $t[3] . '.' . $t[4];
+        $dPort = ((int) $t[5] << 8) + (int) $t[6];
+        $intern = self::internesNetz($adresse);
+
+        // Angeklopft wird an der genannten Adresse - ausser sie ist
+        // intern, dann an der, ueber die wir ohnehin schon reden.
+        $ziel = $intern ? $host : $adresse;
+
+        $fehler = 0;
+        $text = '';
+        $sock = @fsockopen($ziel, $dPort, $fehler, $text, 8.0);
+
+        $wo = 'Der Server nennt ' . $adresse . ':' . $dPort;
+
+        if ($intern) {
+            $wo .= ' - eine interne Adresse, von aussen nicht erreichbar. Geklopft habe '
+                . 'ich deshalb an ' . $host . ':' . $dPort;
+        }
+
+        if (is_resource($sock)) {
+            fclose($sock);
+
+            return self::stufe(
+                'Datenverbindung',
+                true,
+                $wo . '. Dort steht die Verbindung. Der Weg ist also frei - dann liegt es '
+                . 'nicht am Netz, sondern am Auflisten selbst.'
+            );
+        }
+
+        // "Connection refused" heisst: da ist ein Rechner, aber kein
+        // offener Port. Eine Zeitueberschreitung heisst: die Pakete
+        // verschwinden unterwegs. Das sind zwei verschiedene Gespraeche
+        // mit dem Hoster.
+        $abgewiesen = $fehler === 111 || stripos($text, 'refused') !== false;
+
+        return self::stufe(
+            'Datenverbindung',
+            false,
+            $wo . '. ' . ($abgewiesen
+                ? 'Dort wird die Verbindung abgewiesen (Connection refused) - der Port ist '
+                    . 'nicht offen. Das kann nur der Hoster aendern: Der Passiv-Portbereich '
+                    . 'muss von aussen erreichbar sein.'
+                : 'Dort kommt keine Antwort (' . ($text !== '' ? $text : 'Zeitueberschreitung')
+                    . ') - typisch fuer eine Firewall, die die Pakete verwirft. Auch das '
+                    . 'gehoert dem Hoster.')
+        );
+    }
+
+    /**
+     * Was der Server von sich aus anbietet (FEAT).
+     *
+     * Beantwortet nebenbei die Frage, die der Hoster offen liess: Kann
+     * dieses Konto ueberhaupt verschluesseltes FTP? Steht AUTH TLS in
+     * der Liste, ja - und dann ist ein Versuch damit sinnvoll.
+     *
+     * @return array{name:string, ok:bool, info:string}
+     */
+    private static function merkmalStufe($verbindung, bool $verschluesselt): array
+    {
+        $roh = (array) (@ftp_raw($verbindung, 'FEAT') ?: []);
+        $text = implode(' ', array_map('trim', $roh));
+
+        if ($text === '') {
+            return self::stufe('Server kann', true, 'Der Server beantwortet FEAT nicht.');
+        }
+
+        $tls = stripos($text, 'AUTH TLS') !== false || stripos($text, 'AUTH SSL') !== false;
+
+        if ($verschluesselt) {
+            return self::stufe('Server kann', true,
+                'Diese Verbindung laeuft bereits verschluesselt.'
+                . ($tls ? '' : ' Der Server fuehrt AUTH TLS allerdings nicht in seiner Liste.'));
+        }
+
+        return self::stufe(
+            'Server kann',
+            true,
+            $tls
+                ? 'Der Server bietet AUTH TLS an - „FTP mit Verschluesselung“ (Port 21) ist '
+                    . 'hier also moeglich und einen Versuch wert.'
+                : 'Der Server bietet kein AUTH TLS an - verschluesseltes FTP faellt hier weg.'
+        );
+    }
+
+    /** Adressen, die nur im eigenen Netz gelten. */
+    private static function internesNetz(string $ip): bool
+    {
+        return filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+        ) === false;
     }
 
     /**
