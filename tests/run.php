@@ -2298,6 +2298,134 @@ test('Was hochgeladen wird, kommt beim Besucher auch an', function (): void {
 });
 
 // ==================================================================
+test('PHP kommt aus dem Editor zurueck, wie es hineinging', function (): void {
+    // Hier haengt die Datei des Kunden dran. Eine PHP-Seite wird zum
+    // Bearbeiten weggeblendet und danach zurueckgesetzt - kommt dabei
+    // auch nur ein Zeichen anders heraus, ist die Website kaputt.
+    $faelle = [
+        'Startseite mit allem' =>
+            "<?php \$t = \"Start\"; ?>\n<!doctype html>\n<html lang=\"<?= \$s ?>\">\n"
+            . "<body class=\"seite <?php echo \$k; ?>\">\n<h1><?= \$t ?></h1>\n</body></html>",
+
+        /* Ein selbstgebauter Sucher nach dem schliessenden PHP-Zeichen
+           schnitte hier mitten in eine Zeichenkette. PHPs eigener Lexer
+           weiss, dass dort keines ist - deshalb wird er benutzt.
+           (Dieser Kommentar steht in Sternchen und nicht hinter zwei
+           Schraegstrichen: In einem Zeilenkommentar beendet dasselbe
+           Zeichen den PHP-Modus - eine Eigenheit, die genau hier
+           zuschlaegt.) */
+        'Fragezeichen in einer Zeichenkette' => '<p><?php echo "?>"; ?></p>',
+        'Fragezeichen in einem Kommentar' => '<p><?php /* ?> */ echo 1; ?></p>',
+        'Heredoc' => "<div><?php echo <<<X\n?>\nX; ?></div>",
+
+        // Ein Kommentar zwischen zwei <li> ist gueltig, ein <span>
+        // waere es nicht - der Browser schoebe ihn aus der Liste
+        // heraus und damit den Code an eine andere Stelle.
+        'Ueber eine Liste hinweg' =>
+            '<ul><?php foreach ($a as $b): ?><li><?= $b ?></li><?php endforeach; ?></ul>',
+        'In einer Tabelle' => '<table><tr><?php if ($x): ?><td>a</td><?php endif; ?></tr></table>',
+
+        // In <title> und <textarea> liest der Browser den Inhalt als
+        // Text: Aus einem Kommentar wuerde dort maskierter Text, und
+        // beim Speichern stuende der statt des Codes in der Datei.
+        'Im Titel' => '<title><?= $t ?></title>',
+        'Im Textfeld' => '<textarea><?= $t ?></textarea>',
+        'Im Skript' => '<script>var a = <?= $n ?>;</script>',
+
+        'Datei endet mit PHP' => '<p>x</p><?php echo 1;',
+        'Datei ohne PHP' => '<!doctype html><h1>Nur HTML</h1>',
+        'Nur PHP' => '<?php echo 1; ?>',
+        'Zwei Attribute' => '<img src="<?= $a ?>" alt="<?= $b ?>">',
+    ];
+
+    foreach ($faelle as $name => $quelle) {
+        $m = \WebAtze\Build\Maske::maskieren($quelle);
+        is($quelle, \WebAtze\Build\Maske::demaskieren($m['html'], $m['bloecke']),
+            'Rundlauf byteweise identisch: ' . $name);
+    }
+
+    // Und in den vier Rohtext-Elementen darf kein Kommentar stehen.
+    foreach (['title', 'textarea', 'script', 'style'] as $tag) {
+        $m = \WebAtze\Build\Maske::maskieren("<{$tag}><?= \$x ?></{$tag}>");
+        ok(!str_contains($m['html'], '<!--'),
+            "In <{$tag}> steht ein Wort und kein Kommentar");
+    }
+
+    // Umgekehrt: im normalen Fluss ein Kommentar, damit nichts sichtbar
+    // wird, was der Bearbeiter nicht anfassen soll.
+    $m = \WebAtze\Build\Maske::maskieren('<p><?= $x ?></p>');
+    ok(str_contains($m['html'], '<!--wa-php-0-->'), 'Im Textfluss ein unsichtbarer Kommentar');
+});
+
+// ==================================================================
+test('Eine Seite, der PHP fehlt, wird nicht geschrieben', function (): void {
+    // Wer einen Bereich loescht, loescht mit ihm jeden Platzhalter
+    // darin - und das waere Code des Kunden. Erkannt wird das, bevor
+    // geschrieben wird, nicht danach.
+    $quelle = '<p>Text</p><?php echo $a; ?><div><?= $b ?></div>';
+    $m = \WebAtze\Build\Maske::maskieren($quelle);
+
+    is([], \WebAtze\Build\Maske::fehlende($m['html'], $m['bloecke']),
+        'Unveraendert fehlt nichts');
+
+    $ohne = str_replace('<!--wa-php-0-->', '', $m['html']);
+    is([0], \WebAtze\Build\Maske::fehlende($ohne, $m['bloecke']),
+        'Ein geloeschter Block wird benannt');
+
+    $leer = '<p>Nur noch das hier</p>';
+    is([0, 1], \WebAtze\Build\Maske::fehlende($leer, $m['bloecke']),
+        'Und mehrere ebenso');
+
+    ok(\WebAtze\Build\Maske::istPhp('index.php'), 'index.php traegt PHP');
+    ok(\WebAtze\Build\Maske::istPhp('seite.PHTML'), 'phtml auch, unabhaengig von der Schreibweise');
+    ok(!\WebAtze\Build\Maske::istPhp('index.html'), 'Eine HTML-Datei nicht');
+});
+
+// ==================================================================
+test('Der Editor findet auch Seiten, die nicht .html heissen', function (): void {
+    // Der Satz, der den Umbau ausgeloest hat: "man kann nur index.php
+    // bearbeiten aber nicht einzeln startseite, ueberuns". Der Grund
+    // stand in einer Zeile - SEITEN kannte nur html und htm, und eine
+    // Website aus PHP-Dateien hatte damit *keine* Seiten.
+    $quelle = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Http/DirektController.php'
+    );
+
+    ok(preg_match("~SEITEN = \[[^\]]*'php'~", $quelle) === 1,
+        'PHP-Seiten stehen in der Liste');
+    ok(str_contains($quelle, 'Maske::maskieren'), 'Beim Ausliefern wird weggeblendet');
+    ok(str_contains($quelle, 'Maske::demaskieren'), 'Beim Speichern zurueckgesetzt');
+    ok(str_contains($quelle, 'Maske::fehlende'), 'Und vorher geprueft, ob noch alles da ist');
+
+    // Ausgefuehrt wird nie etwas - das ist die Bedingung, unter der man
+    // fremdes PHP ueberhaupt anfassen darf.
+    ok(!preg_match('~\b(include|require|eval)\s*\(?\s*\$datei~', $quelle),
+        'Die Kundendatei wird nirgends eingebunden');
+});
+
+// ==================================================================
+test('Vom Werkzeug bleibt nichts in der Kundendatei', function (): void {
+    // Frueher stand hier eine Liste einzelner Attributnamen. Die
+    // vergisst man beim naechsten Werkzeug - und dann steht sie beim
+    // Kunden. Deshalb faengt die Regel jetzt alles ab, was mit
+    // data-wa- beginnt.
+    $js = (string) file_get_contents(
+        dirname(__DIR__) . '/frontend/src/direkt/direkt.js'
+    );
+
+    ok(str_contains($js, "a.name.startsWith('data-wa-')"),
+        'Jedes data-wa-Attribut fliegt hinaus, nicht eine gepflegte Liste');
+
+    // Und das ganze Dokument wird serialisiert, nicht nur <html>: Bei
+    // einer PHP-Seite steht der erste Block fast immer VOR dem Doctype,
+    // und documentElement.cloneNode() verlor ihn stillschweigend.
+    ok(str_contains($js, 'for (const knoten of dok.childNodes)'),
+        'Serialisiert wird das ganze Dokument');
+    ok(!str_contains($js, 'dok.documentElement.cloneNode'),
+        'Und nicht mehr nur das html-Element');
+});
+
+// ==================================================================
 test('Eine Website aus PHP-Dateien wird genauso bedient', function (): void {
     // Der Fall, der beim ersten Anlauf fehlte - und deshalb ging der
     // Anlauf ins Leere. Gemessen wurde damals an einer index.html;
@@ -3668,8 +3796,25 @@ test('Eine fremde Website laesst sich direkt bearbeiten', function (): void {
         // ------------------------------------------------ die Seitenliste
         $seiten = \WebAtze\Http\DirektController::seitenListe($projekt);
 
-        is(['index.html', 'unterseiten/kontakt.html'], $seiten, 'Beide Seiten stehen zur Wahl');
+        // Auch die PHP-Datei steht darin, und das ist der Umbau:
+        // Vorher kannte die Liste nur .html - eine Kundenwebsite aus
+        // index.php und seite.php hatte damit gar keine Seiten, und der
+        // Editor zeigte "Hier liegt noch keine Seite" ueber einem
+        // Ordner voller Seiten.
+        is(['index.html', 'geheim.php', 'unterseiten/kontakt.html'], $seiten,
+            'Alle drei Seiten stehen zur Wahl, auch die aus PHP');
         is('index.html', $seiten[0], 'Und die Startseite zuerst');
+
+        // Bearbeitbar heisst nicht ausfuehrbar. Was der Rahmen bekommt,
+        // ist das HTML-Geruest; der Code ist weggeblendet und kommt beim
+        // Speichern zurueck.
+        $ausgeliefert = \WebAtze\Build\Maske::maskieren(
+            (string) file_get_contents($ordner . '/geheim.php')
+        );
+
+        ok(!str_contains($ausgeliefert['html'], 'echo'),
+            'Der Code steht nicht in dem, was der Rahmen zu sehen bekommt');
+        is(1, count($ausgeliefert['bloecke']), 'Sondern liegt als Block daneben');
 
         // --------------------------------------------- die Pfadaufloesung
         //

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WebAtze\Http;
 
-use WebAtze\Build\{Staende, Uebernahme};
+use WebAtze\Build\{Maske, Staende, Uebernahme};
 use WebAtze\Core\{Audit, Config, Db, Request, Response, Session, View};
 
 /**
@@ -35,8 +35,21 @@ final class DirektController
     /** Und ein hochgeladenes Bild. */
     private const MAX_BILD_BYTES = 12 * 1024 * 1024;
 
-    /** Was sich bearbeiten laesst. */
-    private const SEITEN = ['html', 'htm'];
+    /**
+     * Was sich bearbeiten laesst.
+     *
+     * Nicht nur HTML. Eine Kundenwebsite besteht oft aus `index.php`
+     * und `seite.php` - und weil hier nur `html` und `htm` standen,
+     * fand der Editor bei ihr *keine einzige Seite* und zeigte
+     * "Hier liegt noch keine Seite". Das war wortwoertlich richtig und
+     * in der Sache unbrauchbar: Die Seiten lagen da, sie hiessen nur
+     * anders.
+     *
+     * Ausgefuehrt wird dabei nie etwas. Der PHP-Code wird vor dem
+     * Ausliefern weggeblendet und beim Speichern zeichengetreu
+     * zurueckgesetzt - siehe `Build\Maske`.
+     */
+    private const SEITEN = ['html', 'htm', 'php', 'phtml', 'shtml'];
 
     /** Und was sich als Bild einsetzen laesst. */
     private const BILDER = [
@@ -133,7 +146,20 @@ final class DirektController
 
         $endung = strtolower(pathinfo($datei, PATHINFO_EXTENSION));
 
-        return Response::make((string) file_get_contents($datei))
+        $inhalt = (string) file_get_contents($datei);
+
+        // Eine PHP-Datei geht ohne ihren Code hinaus.
+        //
+        // Ausfuehren kaeme nicht in Frage - das waere fremder Code auf
+        // dem eigenen Server. Also bleibt er stehen und wird
+        // weggeblendet: Was im Rahmen ankommt, ist das HTML-Geruest mit
+        // seinen Texten, die Bloecke sind unsichtbare Platzhalter.
+        if (Maske::istPhp($datei)) {
+            $inhalt = Maske::maskieren($inhalt)['html'];
+            $endung = 'html';
+        }
+
+        return Response::make($inhalt)
             ->header('Content-Type', self::TYPEN[$endung] ?? 'application/octet-stream')
             ->header('X-Robots-Tag', 'noindex, nofollow, noarchive')
             // Nur wir selbst duerfen das einbetten. Ohne diese Zeile
@@ -176,6 +202,31 @@ final class DirektController
                 'error' => 'Es kam nichts an - oder die Seite ist grösser als '
                     . format_bytes(self::MAX_SEITE_BYTES) . '.',
             ], 400)->noCache();
+        }
+
+        // Bei einer PHP-Seite kommt der Code zurueck an seinen Platz.
+        //
+        // Und vorher die Frage, an der die Datei des Kunden haengt: Ist
+        // noch jeder Block da? Wer einen Absatz loescht, loescht mit ihm
+        // jeden Platzhalter darin - und das waere PHP-Code, der danach
+        // fehlt. Eine Seite, der etwas fehlt, wird nicht geschrieben.
+        if (Maske::istPhp($datei)) {
+            $urspruenglich = Maske::maskieren((string) @file_get_contents($datei));
+            $fehlend = Maske::fehlende($inhalt, $urspruenglich['bloecke']);
+
+            if ($fehlend !== []) {
+                return Response::json([
+                    'ok' => false,
+                    'error' => sprintf(
+                        'Nicht gespeichert: %d PHP-Stelle(n) dieser Seite wären dabei '
+                        . 'verlorengegangen. Das passiert, wenn ein Bereich gelöscht wird, '
+                        . 'in dem Code steckt.',
+                        count($fehlend)
+                    ),
+                ], 409)->noCache();
+            }
+
+            $inhalt = Maske::demaskieren($inhalt, $urspruenglich['bloecke']);
         }
 
         // Zeilenenden so lassen, wie die Datei sie hatte.

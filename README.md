@@ -366,7 +366,43 @@ Dafuer gibt es die **Direktbearbeitung** (`/create/direkt/<id>`):
   deshalb greift das Skript daneben direkt hinein. In die Kundendatei wird nichts
   eingeschleust, und beim Speichern bleibt keine Spur der Bearbeitung.
 * **Text anklicken und schreiben**, **Bild anklicken und tauschen**, Seite fuer Seite.
-  Verschieben und neue Abschnitte gibt es nicht - dafuer braucht es das Datenmodell.
+* **Bloecke verschieben**: am Griff ziehen und auf einen anderen fallen lassen - die
+  beiden tauschen die Plaetze. In jede Richtung, auch nebeneinander. Wer nicht ziehen
+  mag, nimmt die Pfeile in der Werkzeugleiste.
+* **Bausteine einsetzen** aus einer ein- und ausblendbaren Leiste (Ueberschrift, Text,
+  Bild, Knopf, Liste, Zwei Spalten, Abschnitt, Trenner, Abstand). Sie bringen **keine
+  eigene Gestaltung** mit, sondern erben die der Kundenseite - ein Baustein mit
+  mitgebrachten Farben saehe auf jeder zweiten Website falsch aus.
+* **Einstellungen** je Element: Hintergrundfarbe und -bild, Textfarbe, Ausrichtung,
+  Groesse, Abstaende, Ecken, Deckkraft. Geschrieben wird ausschliesslich ins
+  `style`-Attribut - eine Klasse zu vergeben hiesse, in eine Datei zu schreiben, in der
+  schon jemand anders schreibt.
+
+### Auch Seiten, die nicht .html heissen
+
+Eine Kundenwebsite besteht oft aus `index.php` und `seite.php`. Weil
+`DirektController::SEITEN` nur `html` und `htm` kannte, fand der Editor bei ihr *keine
+einzige Seite* und zeigte "Hier liegt noch keine Seite" ueber einem Ordner voller
+Seiten - derselbe Fehlertyp, den er eine Ebene hoeher schon einmal hatte.
+
+Ausgefuehrt wird trotzdem nie etwas; das waere fremder Code auf dem eigenen Server.
+Stattdessen blendet `Build\Maske` die PHP-Bloecke weg und setzt sie beim Speichern
+zeichengetreu zurueck:
+
+* Getrennt wird mit **PHPs eigenem Lexer** (`token_get_all`), nicht mit einem
+  selbstgebauten Sucher. Der scheiterte an `<?php echo "?" . ">"; ?>` - der Lexer weiss,
+  dass dort kein Ende ist.
+* Im Textfluss steht ein **HTML-Kommentar**: ueberall gueltig, auch zwischen zwei `<li>`
+  und in einer `<table>`, und unsichtbar. Ein `<span>` wuerde der Parser aus der Tabelle
+  herausschieben und damit den Code des Kunden verschieben.
+* In einem Tag und in `<title>`, `<textarea>`, `<script>`, `<style>` steht ein **Wort** -
+  dort liest der Browser Kommentare als Text und wuerde sie beim Speichern maskiert
+  zurueckschreiben.
+
+Zwei Sperren schuetzen die Datei: Ein Element mit einem weggeblendeten Block ist **nicht
+textbearbeitbar** (sonst loeschte das Aendern seines Textes den Code), und beim Speichern
+wird geprueft, ob **noch jeder Block da ist**. Fehlt einer, wird nicht geschrieben,
+sondern gesagt, was passiert waere.
 * Gespeichert wird die Datei selbst, mit **denselben Zeilenenden wie vorher**. Sonst
   gaelte beim naechsten Vergleich jede Zeile als geaendert.
 * Der Weg vom Kunden aus: *Kunde → Website editieren →* ZIP einwerfen, bearbeiten,

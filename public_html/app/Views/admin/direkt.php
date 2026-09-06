@@ -88,8 +88,9 @@ $daten = json_out([
                 <h2>Hier liegt noch keine Seite</h2>
                 <p>
                     Lade zuerst das Archiv der Website hoch &ndash; das ZIP, das du mit
-                    deinem FTP-Programm vom Hosting des Kunden geholt hast. Danach steht
-                    die Seite hier und lässt sich Wort für Wort bearbeiten.
+                    deinem FTP-Programm vom Hosting des Kunden geholt hast. Danach stehen
+                    die Seiten hier zur Wahl: <code>.html</code> ebenso wie
+                    <code>.php</code>.
                 </p>
                 <a class="wa-btn wa-btn--primary" href="<?= e($zurueck) ?>">
                     Archiv hochladen
@@ -100,6 +101,9 @@ $daten = json_out([
         <div class="wa-direkt__hinweis" data-direkt-hinweis>
             <strong>Text ändern:</strong> anklicken und schreiben.
             <strong>Bild tauschen:</strong> auf das Bild klicken.
+            <strong>Verschieben:</strong> am Griff <span aria-hidden="true">⠿</span> ziehen und auf
+            einen anderen Block fallen lassen &ndash; die beiden tauschen.
+            <strong>Einsetzen:</strong> Baustein aus der Leiste ziehen.
             Danach speichern und die Website herunterladen.
         </div>
 
