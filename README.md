@@ -376,6 +376,35 @@ Dafuer gibt es die **Direktbearbeitung** (`/create/direkt/<id>`):
 Der Ordner, in dem gearbeitet wird, ist derselbe `live`-Ordner - was dort steht, faehrt
 beim naechsten Herunterladen mit hinaus.
 
+### Was beim Besucher ankommt
+
+Einmal sah es aus, als sei das Hochladen fehlgeschlagen: Eine Textaenderung war live
+zu sehen, wurde zurueckgenommen, wieder hochgeladen - und die Seite zeigte weiter die
+alte Fassung. Das ZIP war richtig gepackt. Der Browser des Besuchers hatte die Seite
+im Zwischenspeicher und fragte gar nicht erst nach, weil ueber HTML nichts dastand:
+**ohne Angabe raet der Browser eine Haltbarkeit** - ueblich sind zehn Prozent des
+Dateialters.
+
+Fremde Zwischenspeicher lassen sich nicht leeren, von niemandem. Sie liegen auf den
+Geraeten der Besucher. Verhindern, dass sie entstehen, geht - `Build\Frische` tut vor
+jedem Packen zwei Dinge:
+
+* **Eine `.htaccess`-Regel**, die Seiten immer nachfragen laesst (`no-cache,
+  must-revalidate`). Unveraendert kostet das ein knappes *304* und keine Daten;
+  geaendert kommt sofort die neue Fassung. Eine vorhandene `.htaccess` wird **nicht**
+  ersetzt - bei WordPress haengen die Adressen aller Unterseiten daran. Nur ein
+  markierter Block wird gesetzt und beim naechsten Mal wiedergefunden.
+* **Ein `?v=` an Stilblatt und Skript**, mit dem Aenderungszeitpunkt der Zieldatei -
+  nicht mit der Uhrzeit. Ein geaendertes Stilblatt hat damit eine neue Adresse; ein
+  unveraendertes bleibt liegen, statt bei jedem Herunterladen neu geladen zu werden.
+
+Bilder brauchen nichts davon: Ein hier getauschtes Bild bekommt immer einen neuen
+Dateinamen, und eine neue Adresse wird nie aus dem Zwischenspeicher bedient.
+
+Beides greift nur auf Apache - auf nginx wird `.htaccess` nicht gelesen, der Stempel
+wirkt trotzdem. Und es wirkt ab dem naechsten Abruf: Wer die alte Seite gerade im
+Zwischenspeicher hat, sieht sie noch, bis dessen geratene Haltbarkeit abgelaufen ist.
+
 ### Staende
 
 Ein **Stand** ist eine Fassung der Website: ein Archiv und der Zeitpunkt, an dem

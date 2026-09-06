@@ -202,11 +202,39 @@ final class Staende
             return null;
         }
 
+        // Bevor gepackt wird: dafuer sorgen, dass beim Besucher ankommt,
+        // was hier liegt.
+        //
+        // Genau hier hat es einmal ausgesehen, als sei das Speichern
+        // kaputt: Das ZIP war richtig, die Seite beim Kunden zeigte
+        // trotzdem die alte Fassung - der Browser des Besuchers hatte
+        // sie im Zwischenspeicher und fragte nicht nach. Fremde
+        // Zwischenspeicher kann niemand leeren; verhindern, dass sie
+        // entstehen, geht.
+        Frische::sichern($quelle);
+
         $tmp = ensure_dir(STORAGE_DIR . '/tmp');
         self::tmpAufraeumen($tmp);
 
-        $ziel = $tmp . '/'
-            . (string) $projekt['slug'] . '-' . date('Y-m-d-Hi') . '-' . bin2hex(random_bytes(3)) . '.zip';
+        // Der Name muss zwei Downloads auseinanderhalten koennen.
+        //
+        // Vorher stand darin die Minute und sechs Zufallszeichen:
+        // steiner-2026-09-06-1259-aebafe.zip und
+        // steiner-2026-09-06-1259-c05415.zip. Zwei Runden hintereinander
+        // ergeben zwei davon im selben Ordner, und welches das neuere
+        // ist, sieht man nicht - man laedt das falsche hoch und sucht
+        // den Fehler dann im Werkzeug.
+        //
+        // Deshalb: Sekunden statt Minuten, und die Zeit von hinten
+        // lesbar. Zwei Downloads koennen nicht mehr gleich heissen, und
+        // der Name sagt selbst, welcher der spaetere ist.
+        $ziel = $tmp . '/' . (string) $projekt['slug'] . '-' . date('Y-m-d-His') . '.zip';
+
+        if (is_file($ziel)) {
+            // Zweimal in derselben Sekunde. Kommt praktisch nie vor,
+            // waere aber genau die stille Verwechslung von vorhin.
+            $ziel = substr($ziel, 0, -4) . '-' . bin2hex(random_bytes(2)) . '.zip';
+        }
 
         $zip = new \ZipArchive();
 

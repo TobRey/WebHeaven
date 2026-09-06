@@ -2197,6 +2197,125 @@ test('Das Fenster zeigt genau zwei Dinge', function (): void {
 });
 
 // ==================================================================
+test('Was hochgeladen wird, kommt beim Besucher auch an', function (): void {
+    // Der Anlass: Eine Textaenderung war live zu sehen, wurde
+    // zurueckgenommen, wieder hochgeladen - und die Seite zeigte weiter
+    // die alte Fassung. Das ZIP war richtig gepackt. Der Browser des
+    // Besuchers hatte die Seite im Zwischenspeicher und fragte nicht
+    // nach, weil die .htaccess ueber HTML gar nichts sagte: Ohne Angabe
+    // raet der Browser eine Haltbarkeit.
+    //
+    // Fremde Zwischenspeicher kann niemand leeren. Verhindern, dass sie
+    // entstehen, geht - und genau das wird hier geprueft.
+    $ordner = sys_get_temp_dir() . '/wa-frische-' . bin2hex(random_bytes(5));
+    @mkdir($ordner . '/tief/css', 0755, true);
+
+    try {
+        // Eine fremde Website, wie sie hereinkommt: mit eigener
+        // .htaccess, an der Adressen haengen.
+        $wordpress = "# BEGIN WordPress\n<IfModule mod_rewrite.c>\nRewriteEngine On\n"
+            . "RewriteRule . /index.php [L]\n</IfModule>\n# END WordPress\n";
+        file_put_contents($ordner . '/.htaccess', $wordpress);
+        file_put_contents($ordner . '/tief/css/stil.css', 'body{}');
+        touch($ordner . '/tief/css/stil.css', 1767225600);
+
+        file_put_contents($ordner . '/index.html',
+            '<!doctype html><html><head>'
+            . '<link rel="stylesheet" href="tief/css/stil.css">'
+            . '<link rel="stylesheet" href="https://fremd.example/x.css">'
+            . '<script src="tief/css/gibtsnicht.js"></script>'
+            . '</head><body><img src="bild.jpg"></body></html>');
+
+        $erst = \WebAtze\Build\Frische::sichern($ordner);
+
+        ok($erst['htaccess'], 'Die Regeln werden gesetzt');
+        is(1, $erst['seiten'], 'Eine Seite wurde gestempelt');
+        is(1, $erst['verweise'], 'Und darin genau ein Verweis');
+
+        $htaccess = (string) file_get_contents($ordner . '/.htaccess');
+
+        // Das Wichtigste zuerst: Die fremden Regeln stehen noch da. Sie
+        // zu ueberschreiben hiesse, die Website kaputtzumachen, um sie
+        // zu beschleunigen.
+        ok(str_contains($htaccess, 'BEGIN WordPress'), 'Die fremden Regeln bleiben unangetastet');
+        ok(str_contains($htaccess, 'RewriteRule . /index.php [L]'), 'Samt Inhalt');
+
+        ok(preg_match('~<FilesMatch "\\\\.\\(html\\|htm\\)\\$">\s*\n\s*Header set Cache-Control "no-cache~', $htaccess) === 1,
+            'Seiten werden immer nachgefragt');
+        ok(str_contains($htaccess, 'max-age=31536000'), 'Stilblatt und Skript duerfen liegen bleiben');
+
+        $seite = (string) file_get_contents($ordner . '/index.html');
+
+        ok(str_contains($seite, 'tief/css/stil.css?v=1767225600'),
+            'Der Stempel ist die Aenderungszeit der Zieldatei');
+        ok(str_contains($seite, 'href="https://fremd.example/x.css"'),
+            'Ein fremder Server wird nicht angefasst');
+        ok(str_contains($seite, 'src="tief/css/gibtsnicht.js"'),
+            'Und eine Datei, die es nicht gibt, auch nicht');
+        ok(str_contains($seite, 'src="bild.jpg"'),
+            'Bilder bleiben, wie sie sind - ein getauschtes hat ohnehin einen neuen Namen');
+
+        // Zweimal laufen darf nichts verdoppeln: Der Block wird
+        // wiedergefunden, das ?v= ersetzt. Sonst waechst die .htaccess
+        // mit jedem Herunterladen und die Adresse endet auf ?v=1&v=2.
+        \WebAtze\Build\Frische::sichern($ordner);
+        \WebAtze\Build\Frische::sichern($ordner);
+
+        $htaccess = (string) file_get_contents($ordner . '/.htaccess');
+        $seite = (string) file_get_contents($ordner . '/index.html');
+
+        is(1, substr_count($htaccess, \WebAtze\Build\Frische::MARKE_AUF), 'Der Block steht genau einmal da');
+        is(1, substr_count($htaccess, 'BEGIN WordPress'), 'Und die fremden Regeln ebenso');
+        is(1, substr_count($seite, '?v='), 'Der Stempel steht genau einmal am Verweis');
+        ok(!str_contains($seite, '&v='), 'Und reiht sich nicht aneinander');
+
+        // Aendert sich die Datei, aendert sich der Stempel - und nur
+        // dann. Mit der aktuellen Uhrzeit muesste jeder Besucher nach
+        // jedem Herunterladen alles neu laden.
+        touch($ordner . '/tief/css/stil.css', 1767312000);
+        \WebAtze\Build\Frische::sichern($ordner);
+
+        ok(str_contains((string) file_get_contents($ordner . '/index.html'), 'stil.css?v=1767312000'),
+            'Ein geaendertes Stilblatt bekommt eine neue Adresse');
+
+        // Und ohne vorhandene .htaccess entsteht eine.
+        $leer = sys_get_temp_dir() . '/wa-frische-leer-' . bin2hex(random_bytes(5));
+        @mkdir($leer, 0755, true);
+        \WebAtze\Build\Frische::sichern($leer);
+
+        ok(is_file($leer . '/.htaccess'), 'Wo keine liegt, wird eine angelegt');
+        delete_tree($leer);
+    } finally {
+        delete_tree($ordner);
+    }
+});
+
+// ==================================================================
+test('Auch eine gebaute Website sagt etwas ueber ihre Seiten', function (): void {
+    // Die erzeugte .htaccess regelte Stilblatt, Skript und Bilder - und
+    // ueber HTML schwieg sie. Genau die Luecke, aus der der Fehler kam.
+    $htaccess = new ReflectionMethod(\WebAtze\Build\SiteBuilder::class, 'htaccess');
+    $htaccess->setAccessible(true);
+    $inhalt = (string) $htaccess->invoke(null);
+
+    ok(str_contains($inhalt, 'no-cache, must-revalidate'), 'Seiten werden nachgefragt');
+    ok(preg_match('~\(html\|htm\)~', $inhalt) === 1, 'Und zwar HTML-Seiten');
+});
+
+// ==================================================================
+test('Das Herunterladen legt die Regeln bei', function (): void {
+    // Sie muessen im Archiv liegen, sonst nuetzen sie nichts: Tobias
+    // laedt das ZIP hoch und entpackt es - was nicht darin ist, kommt
+    // nie beim Kunden an.
+    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Staende.php');
+
+    ok(str_contains($quelle, 'Frische::sichern($quelle)'),
+        'jetztPacken() richtet den Ordner vor dem Packen her');
+    ok(strpos($quelle, 'Frische::sichern') < strpos($quelle, '$zip->addFile'),
+        'Und zwar vorher, nicht nachher');
+});
+
+// ==================================================================
 test('Herunterladen gibt heraus, was gespeichert wurde', function (): void {
     // Der Fehler, um den es geht: Nach dem Hochladen eines Archivs zeigte
     // "Website herunterladen" auf den zuletzt abgelegten Eintrag - und

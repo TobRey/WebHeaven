@@ -526,6 +526,18 @@ final class SiteBuilder
             Header always set Referrer-Policy "strict-origin-when-cross-origin"
             Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
 
+            # Seiten: immer nachfragen.
+            #
+            # Diese Zeile fehlte, und das war teuer. Ohne Angabe raet der
+            # Browser eine Haltbarkeit - ueblich sind zehn Prozent des
+            # Dateialters - und liefert die Seite ohne Rueckfrage aus.
+            # Eine geaenderte Seite war beim Besucher dann tagelang nicht
+            # zu sehen, und es sah aus, als sei das Hochladen
+            # fehlgeschlagen.
+            <FilesMatch "\.(html|htm)$">
+                Header set Cache-Control "no-cache, must-revalidate"
+            </FilesMatch>
+
             <FilesMatch "\.(css|js|woff2|png|jpg|jpeg|webp|avif|svg|ico)$">
                 Header set Cache-Control "public, max-age=2592000"
             </FilesMatch>
