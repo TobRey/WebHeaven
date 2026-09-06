@@ -264,6 +264,20 @@ final class Staende
             $anzahl++;
         }
 
+        // Die Nachschau faehrt mit - aber nur im Archiv, nicht im
+        // Arbeitsordner.
+        //
+        // Im Ordner waere sie ab dem naechsten Mal Teil der Website:
+        // Sie stuende in der Seitenliste des Editors, wuerde beim
+        // naechsten Herunterladen erneut eingepackt und truege dann
+        // eine Frist mit sich, die laengst abgelaufen ist.
+        $nachschau = Frischeprobe::datei($projekt);
+
+        if ($nachschau !== '') {
+            $zip->addFromString(Frischeprobe::DATEI, $nachschau);
+            $anzahl++;
+        }
+
         $zip->close();
 
         if ($anzahl === 0 || !is_file($ziel)) {

@@ -385,6 +385,19 @@ im Zwischenspeicher und fragte gar nicht erst nach, weil ueber HTML nichts dasta
 **ohne Angabe raet der Browser eine Haltbarkeit** - ueblich sind zehn Prozent des
 Dateialters.
 
+Beim ersten Anlauf blieb es trotzdem stehen, und zwar aus einem Grund, der die ganze
+Annahme trifft: Die Regel lautete `<FilesMatch "\.(html|htm)$">` und prueft damit den
+**Dateinamen**. Eine Kundenwebsite laeuft aber ueber `index.php` - die Regel griff bei
+ihr nie. Gemessen worden war an einer `index.html`: der Test richtig, der Testfall
+falsch. Dieselbe Annahme steckte im Stempeln (nur `.html`) und im Editor
+(`SEITEN = ['html','htm']`).
+
+Geprueft wird deshalb jetzt, **was ausgeliefert wird**, nicht wie die Datei heisst -
+und zwar auf drei Wegen, weil jeder einzelne eine Luecke hat: `mod_expires` (den auch
+LiteSpeed auswertet), eine `expr=%{CONTENT_TYPE}`-Bedingung (die auch die nackte
+Adresse `/` fasst) und `<FilesMatch>` samt `php`. Alles in `<IfModule>`, damit ein
+fehlendes Modul die Website nicht vom Netz nimmt.
+
 Fremde Zwischenspeicher lassen sich nicht leeren, von niemandem. Sie liegen auf den
 Geraeten der Besucher. Verhindern, dass sie entstehen, geht - `Build\Frische` tut vor
 jedem Packen zwei Dinge:
@@ -401,9 +414,33 @@ jedem Packen zwei Dinge:
 Bilder brauchen nichts davon: Ein hier getauschtes Bild bekommt immer einen neuen
 Dateinamen, und eine neue Adresse wird nie aus dem Zwischenspeicher bedient.
 
+Die lange Haltbarkeit haengt am Stempel: Konnte kein einziger Verweis gestempelt
+werden, schreibt der Block statt eines Jahres eine Stunde. Ohne wechselnde Adresse
+waere ein Jahr eine Falle - genau die, die im ersten Anlauf ausgeliefert wurde, weil
+der Block das Jahr setzte und das Stempeln ueber null Dateien lief.
+
 Beides greift nur auf Apache - auf nginx wird `.htaccess` nicht gelesen, der Stempel
 wirkt trotzdem. Und es wirkt ab dem naechsten Abruf: Wer die alte Seite gerade im
 Zwischenspeicher hat, sieht sie noch, bis dessen geratene Haltbarkeit abgelaufen ist.
+
+### Die Nachschau im Archiv
+
+Bleibt es trotzdem stehen, liegt es an etwas, das von hier aus nicht zu sehen ist.
+Deshalb faehrt `webatze-frisch.php` im Archiv mit (`Build\Frischeprobe`, Vorlage in
+`Kit/frisch/`) - aufgerufen wird sie **von Hand im Browser**, weil zum Kundenserver
+keine Verbindung durchkommt.
+
+Sie misst in dieser Reihenfolge, und die Reihenfolge ist die Auskunft: Liegt die Datei
+ueberhaupt dort, wo die Website ausgeliefert wird (mit Kurzfinger je Datei - stimmt er
+nicht, ist das Archiv nie angekommen und jedes Leeren waere verlorene Zeit)? Kommt die
+Anfrage bis zu PHP (eine Zahl, die sich bei jedem Aufruf aendert - bleibt sie stehen,
+sitzt ein Vorrat davor)? Was sagt OPcache (bei `validate_timestamps=0` sieht der Server
+eine getauschte Datei **nie**, und kein Browser-Cache-Leeren hilft)? Und was liefert die
+Startseite tatsaechlich an Kopfzeilen?
+
+Der Schluessel wird aus `app_key` und der Nummer der Website abgeleitet, nicht
+gespeichert - so ist er je Website ein anderer und morgen noch derselbe. Ohne ihn
+antwortet die Datei mit 404, nach einer Woche loescht sie sich.
 
 ### Staende
 

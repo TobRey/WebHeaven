@@ -37,6 +37,16 @@ namespace WebAtze\Build;
  */
 final class Frische
 {
+    /**
+     * Was eine Seite ist.
+     *
+     * Nicht nur `.html`. Eine Kundenwebsite läuft oft über `index.php`,
+     * und dort stehen dieselben Verweise auf Stilblatt und Skript. Als
+     * hier nur `html` und `htm` standen, lief das Stempeln bei solchen
+     * Websites über null Dateien - ohne dass irgendwo etwas fehlschlug.
+     */
+    private const SEITEN = ['html', 'htm', 'php', 'phtml', 'shtml'];
+
     /** Anfang und Ende des Blocks, den WebAtze verwaltet. */
     public const MARKE_AUF = '# ---- WebAtze: Zwischenspeicher (automatisch gesetzt) ----';
     public const MARKE_ZU = '# ---- WebAtze: Ende ----';
@@ -55,7 +65,7 @@ final class Frische
         $gestempelt = self::stempeln($ordner);
 
         return [
-            'htaccess' => self::regelnSetzen($ordner),
+            'htaccess' => self::regelnSetzen($ordner, $gestempelt['verweise'] > 0),
             'seiten' => $gestempelt['seiten'],
             'verweise' => $gestempelt['verweise'],
         ];
@@ -73,11 +83,11 @@ final class Frische
      * Beim nächsten Mal wird derselbe Block wiedergefunden - die Datei
      * wächst also nicht mit jedem Herunterladen.
      */
-    public static function regelnSetzen(string $ordner): bool
+    public static function regelnSetzen(string $ordner, bool $gestempelt = true): bool
     {
         $datei = $ordner . '/.htaccess';
         $alt = is_file($datei) ? (string) @file_get_contents($datei) : '';
-        $block = self::block();
+        $block = self::block($gestempelt);
 
         $auf = strpos($alt, self::MARKE_AUF);
         $zu = strpos($alt, self::MARKE_ZU);
@@ -217,7 +227,7 @@ final class Frische
                 continue;
             }
 
-            if (in_array(strtolower($eintrag->getExtension()), ['html', 'htm'], true)) {
+            if (in_array(strtolower($eintrag->getExtension()), self::SEITEN, true)) {
                 $treffer[] = $eintrag->getPathname();
             }
         }
@@ -225,29 +235,81 @@ final class Frische
         return $treffer;
     }
 
-    private static function block(): string
+    /**
+     * Der Block, der in die `.htaccess` kommt.
+     *
+     * `$gestempelt` sagt, ob die Verweise auf Stilblatt und Skript ein
+     * `?v=` bekommen haben. Davon hängt ab, wie lange die beiden liegen
+     * bleiben dürfen - und diese Kopplung ist kein Feinschliff, sondern
+     * der Unterschied zwischen schnell und kaputt:
+     *
+     * Ein Jahr Haltbarkeit ist nur zulässig, wenn sich die **Adresse**
+     * ändert, sobald sich die Datei ändert. Ohne Stempel wäre es eine
+     * Falle - ein geändertes Stilblatt bliebe beim Besucher ein Jahr
+     * lang eingefroren, und niemand käme mehr daran. Genau das ist
+     * vorher passiert: Der Block setzte das Jahr, das Stempeln lief
+     * aber über null Dateien, weil es nur `.html` kannte.
+     */
+    private static function block(bool $gestempelt = true): string
     {
+        // Ohne Stempel: eine Stunde und danach nachfragen. Kurz genug,
+        // dass ein Fehler in Stunden vergeht statt in Monaten.
+        $beiwerk = $gestempelt
+            ? 'public, max-age=31536000'
+            : 'public, max-age=3600, must-revalidate';
+
         return self::MARKE_AUF . "\n"
             . "# Von WebAtze gesetzt. Dieser Block wird beim nächsten Herunterladen\n"
             . "# ersetzt - eigene Regeln bitte ausserhalb der beiden Markierungen.\n"
+            . "#\n"
+            . "# Zeigt die Website nach dem Hochladen plötzlich einen Fehler 500,\n"
+            . "# versteht dieser Server eine der Regeln nicht: Block löschen, fertig.\n"
+            . "\n"
+            . "# SEITEN: IMMER NACHFRAGEN.\n"
+            . "#\n"
+            . "# Geprüft wird, WAS ausgeliefert wird - nicht, wie die Datei heisst.\n"
+            . "# Vorher stand hier nur <FilesMatch \"\\.(html|htm)\$\">, und eine\n"
+            . "# Website, die über index.php läuft, heisst nicht index.html. Die\n"
+            . "# Regel griff bei ihr nie, und es sah aus, als käme keine Änderung an.\n"
+            . "#\n"
+            . "# Drei Wege übereinander, weil jeder einzelne eine Lücke hat.\n"
+            . "\n"
+            . "# Weg 1: über den Inhaltstyp. Der einzige, den auch LiteSpeed\n"
+            . "# auswertet - dort wird die Bedingung in Weg 2 stillschweigend\n"
+            . "# übergangen, ohne Fehlermeldung und ohne Wirkung.\n"
+            . "<IfModule mod_expires.c>\n"
+            . "    ExpiresActive On\n"
+            . "    ExpiresByType text/html \"access plus 0 seconds\"\n"
+            . "    ExpiresByType application/xhtml+xml \"access plus 0 seconds\"\n"
+            . "</IfModule>\n"
+            . "\n"
             . "<IfModule mod_headers.c>\n"
-            . "    # Seiten: immer nachfragen. Ohne diese Zeile raet der Browser\n"
-            . "    # eine Haltbarkeit und zeigt eine geaenderte Seite tagelang nicht.\n"
-            . "    <FilesMatch \"\\.(html|htm)$\">\n"
-            . "        Header set Cache-Control \"no-cache, must-revalidate\"\n"
+            . "    # Weg 2: Apache, ebenfalls am Inhaltstyp. Fasst auch die nackte\n"
+            . "    # Adresse \"/\" und jede Seite ohne Dateiendung.\n"
+            . "    Header always set Cache-Control \"no-cache, must-revalidate\" \"expr=%{CONTENT_TYPE} =~ m#^text/html#i\"\n"
+            . "\n"
+            . "    # Weg 3: am Dateinamen, für Server, die den Ausdruck oben nicht\n"
+            . "    # auswerten. Doppelt gesetzt schadet nicht: \"always set\" ersetzt\n"
+            . "    # den Wert, es reiht sich nichts aneinander.\n"
+            . "    <FilesMatch \"\\.(html|htm|php|phtml|shtml)\$\">\n"
+            . "        Header always set Cache-Control \"no-cache, must-revalidate\"\n"
             . "    </FilesMatch>\n"
             . "\n"
-            . "    # Stilblatt und Skript duerfen liegen bleiben: Ihre Adresse\n"
-            . "    # traegt ein ?v= mit dem Aenderungszeitpunkt und ist nach einer\n"
-            . "    # Aenderung eine andere.\n"
-            . "    <FilesMatch \"\\.(css|js)$\">\n"
-            . "        Header set Cache-Control \"public, max-age=31536000\"\n"
+            . ($gestempelt
+                ? "    # Stilblatt und Skript dürfen liegen bleiben: Ihre Adresse trägt\n"
+                    . "    # ein ?v= mit dem Änderungszeitpunkt und ist nach einer Änderung\n"
+                    . "    # eine andere.\n"
+                : "    # Nur eine Stunde. In dieser Website wurde kein einziger Verweis\n"
+                    . "    # auf Stilblatt oder Skript gefunden, der sich stempeln liesse -\n"
+                    . "    # ohne wechselnde Adresse wäre ein Jahr Haltbarkeit eine Falle.\n")
+            . "    <FilesMatch \"\\.(css|js)\$\">\n"
+            . "        Header always set Cache-Control \"" . $beiwerk . "\"\n"
             . "    </FilesMatch>\n"
             . "\n"
             . "    # Bilder und Schriften: ein Monat. Ein hier getauschtes Bild\n"
             . "    # bekommt ohnehin einen neuen Dateinamen.\n"
-            . "    <FilesMatch \"\\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf)$\">\n"
-            . "        Header set Cache-Control \"public, max-age=2592000\"\n"
+            . "    <FilesMatch \"\\.(png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf)\$\">\n"
+            . "        Header always set Cache-Control \"public, max-age=2592000\"\n"
             . "    </FilesMatch>\n"
             . "</IfModule>\n"
             . self::MARKE_ZU;

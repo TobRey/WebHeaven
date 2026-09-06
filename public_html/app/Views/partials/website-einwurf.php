@@ -18,7 +18,7 @@
  * @var string $base
  */
 
-use WebAtze\Build\Staende;
+use WebAtze\Build\{Frischeprobe, Staende};
 use WebAtze\Core\Csrf;
 
 $w = $website ?? [];
@@ -100,6 +100,27 @@ $wann = static function (?string $zeit): string {
             Hier liegt noch keine Website. Lade das ZIP hoch, das du mit deinem
             FTP-Programm vom Hosting des Kunden geholt hast.
         </p>
+    <?php endif; ?>
+
+    <?php
+    /* -------------------------------------------------- Nachschau
+       Der Fall, der zweimal einen halben Tag gekostet hat: Das ZIP war
+       richtig, das Hochladen auch - und die Seite zeigte trotzdem die
+       alte Fassung. Von hier aus ist das nicht zu sehen; die Datei im
+       Archiv sieht es. */
+    $nachschau = Frischeprobe::adresse($w);
+    ?>
+    <?php if ($nachschau !== ''): ?>
+        <details class="wa-einwurf__nachschau">
+            <summary>Beim Kunden steht noch die alte Fassung?</summary>
+            <p class="wa-einwurf__wann">
+                Im heruntergeladenen Archiv liegt <code>webatze-frisch.php</code>. Nach dem
+                Entpacken einmal aufrufen &ndash; sie sagt, woran es liegt, und leert, was
+                von dort erreichbar ist. Nach einer Woche löscht sie sich selbst.
+            </p>
+            <input class="wa-input" readonly onclick="this.select()"
+                   value="<?= e($nachschau) ?>">
+        </details>
     <?php endif; ?>
 
     <?php /* -------------------------------------------------- Ältere */ ?>

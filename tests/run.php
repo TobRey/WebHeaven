@@ -2240,8 +2240,15 @@ test('Was hochgeladen wird, kommt beim Besucher auch an', function (): void {
         ok(str_contains($htaccess, 'BEGIN WordPress'), 'Die fremden Regeln bleiben unangetastet');
         ok(str_contains($htaccess, 'RewriteRule . /index.php [L]'), 'Samt Inhalt');
 
-        ok(preg_match('~<FilesMatch "\\\\.\\(html\\|htm\\)\\$">\s*\n\s*Header set Cache-Control "no-cache~', $htaccess) === 1,
-            'Seiten werden immer nachgefragt');
+        // Drei Wege, und jeder einzelne muss dastehen. Vorher stand hier
+        // nur der ueber den Dateinamen, und zwar nur fuer .html - eine
+        // Website, die ueber index.php laeuft, bekam gar keine Regel.
+        ok(str_contains($htaccess, 'ExpiresByType text/html'),
+            'Weg 1: ueber den Inhaltstyp, auch fuer LiteSpeed');
+        ok(str_contains($htaccess, 'expr=%{CONTENT_TYPE}'),
+            'Weg 2: derselbe fuer Apache, fasst auch die nackte Adresse');
+        ok(preg_match('~<FilesMatch "[^"]*php[^"]*">\s*\n\s*Header always set Cache-Control "no-cache~', $htaccess) === 1,
+            'Weg 3: ueber den Dateinamen, und php steht drin');
         ok(str_contains($htaccess, 'max-age=31536000'), 'Stilblatt und Skript duerfen liegen bleiben');
 
         $seite = (string) file_get_contents($ordner . '/index.html');
@@ -2285,6 +2292,97 @@ test('Was hochgeladen wird, kommt beim Besucher auch an', function (): void {
 
         ok(is_file($leer . '/.htaccess'), 'Wo keine liegt, wird eine angelegt');
         delete_tree($leer);
+    } finally {
+        delete_tree($ordner);
+    }
+});
+
+// ==================================================================
+test('Eine Website aus PHP-Dateien wird genauso bedient', function (): void {
+    // Der Fall, der beim ersten Anlauf fehlte - und deshalb ging der
+    // Anlauf ins Leere. Gemessen wurde damals an einer index.html;
+    // die Kundenwebsite besteht aber aus index.php und seite.php, und
+    // fuer die griff keine einzige Regel.
+    $ordner = sys_get_temp_dir() . '/wa-php-' . bin2hex(random_bytes(5));
+    @mkdir($ordner . '/css', 0755, true);
+
+    try {
+        file_put_contents($ordner . '/css/stil.css', 'body{}');
+        touch($ordner . '/css/stil.css', 1767225600);
+
+        // So sieht eine PHP-Seite aus: HTML mit Code dazwischen.
+        $vorher = '<?php $titel = "Start"; ?>' . "\n"
+            . '<!doctype html><html><head>'
+            . '<link rel="stylesheet" href="css/stil.css">'
+            . '<link rel="stylesheet" href="<?= $basis ?>/dyn.css">'
+            . '<title><?= htmlspecialchars($titel) ?></title>'
+            . '</head><body><h1><?php echo $titel; ?></h1></body></html>';
+
+        file_put_contents($ordner . '/index.php', $vorher);
+        file_put_contents($ordner . '/seite.php', '<?php include "index.php";');
+
+        $r = \WebAtze\Build\Frische::sichern($ordner);
+
+        is(1, $r['seiten'], 'Die PHP-Seite wird als Seite erkannt');
+        is(1, $r['verweise'], 'Und der Verweis darin gestempelt');
+
+        $nachher = (string) file_get_contents($ordner . '/index.php');
+
+        ok(str_contains($nachher, 'css/stil.css?v=1767225600'),
+            'Das vorhandene Stilblatt bekommt seinen Stempel');
+
+        // Ein Verweis, den PHP erst zusammensetzt, hat keine Datei, auf
+        // die er zeigt - er wird nicht angefasst. Sonst stuende dort
+        // eine Adresse, die es nie gab.
+        ok(str_contains($nachher, 'href="<?= $basis ?>/dyn.css"'),
+            'Ein in PHP zusammengesetzter Verweis bleibt unberuehrt');
+
+        // Und der Code selbst, Zeichen fuer Zeichen. Das ist die
+        // Bedingung, unter der man so etwas ueberhaupt anfassen darf.
+        foreach (['<?php $titel = "Start"; ?>',
+                  '<?= htmlspecialchars($titel) ?>',
+                  '<?php echo $titel; ?>'] as $stueck) {
+            ok(str_contains($nachher, $stueck), 'Der PHP-Code bleibt unveraendert: ' . $stueck);
+        }
+
+        $htaccess = (string) file_get_contents($ordner . '/.htaccess');
+
+        ok(str_contains($htaccess, 'php'), 'Die Regel nennt PHP-Seiten');
+        ok(str_contains($htaccess, 'max-age=31536000'),
+            'Und weil gestempelt wurde, duerfen Stilblatt und Skript lange liegen');
+    } finally {
+        delete_tree($ordner);
+    }
+});
+
+// ==================================================================
+test('Ohne Stempel keine lange Haltbarkeit', function (): void {
+    // Die Falle, die im ersten Anlauf ausgeliefert wurde: Der Block
+    // setzte ein Jahr Haltbarkeit auf Stilblatt und Skript - und das
+    // Stempeln, das diese Zeit erst zulaessig macht, lief ueber null
+    // Dateien, weil es nur .html kannte. Ein geaendertes Stilblatt waere
+    // beim Besucher ein Jahr lang eingefroren gewesen.
+    //
+    // Deshalb haengt das eine jetzt am anderen.
+    $ordner = sys_get_temp_dir() . '/wa-ohne-' . bin2hex(random_bytes(5));
+    @mkdir($ordner, 0755, true);
+
+    try {
+        // Eine Seite ohne jeden Verweis - es gibt nichts zu stempeln.
+        file_put_contents($ordner . '/index.html', '<!doctype html><html><body>Hallo</body></html>');
+
+        $r = \WebAtze\Build\Frische::sichern($ordner);
+        $htaccess = (string) file_get_contents($ordner . '/.htaccess');
+
+        is(0, $r['verweise'], 'Es gab nichts zu stempeln');
+        ok(!str_contains($htaccess, 'max-age=31536000'),
+            'Also steht dort auch kein Jahr Haltbarkeit');
+        ok(str_contains($htaccess, 'max-age=3600'),
+            'Sondern eine Stunde - ein Fehler vergeht dann in Stunden statt in Monaten');
+
+        // Die Seiten-Regel gilt trotzdem, unabhaengig davon.
+        ok(str_contains($htaccess, 'no-cache, must-revalidate'),
+            'Und Seiten werden weiterhin immer nachgefragt');
     } finally {
         delete_tree($ordner);
     }

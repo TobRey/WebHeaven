@@ -728,6 +728,19 @@
   flex-wrap: wrap;
 }
 
+/* Der Weg fuer den Fall, dass beim Kunden trotzdem die alte Fassung
+   steht. Zugeklappt, weil er selten gebraucht wird - aber auffindbar,
+   weil er dann dringend gebraucht wird. */
+.wa-einwurf__nachschau > summary {
+  cursor: pointer;
+  font-size: var(--wa-text-sm);
+  color: var(--wa-text-muted);
+  padding-block: var(--wa-space-2);
+}
+
+.wa-einwurf__nachschau > summary:hover { color: var(--wa-text); }
+.wa-einwurf__nachschau .wa-input { font-size: var(--wa-text-sm); }
+
 /* Ausklappbare Hilfe, z.B. "wo finde ich meine FTP-Daten?" */
 .wa-help {
   border: 1px solid var(--wa-border);
