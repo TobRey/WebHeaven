@@ -168,13 +168,13 @@ final class DeployController
      *
      * Du holst die Website mit deinem FTP-Programm herunter und lädst
      * sie hier als ZIP hoch. Ausgepackt wird nach
-     * `storage/projects/<slug>/live` - ausserhalb des Web-Ordners.
+     * `storage/projects/<slug>/live`.
      *
-     * Das war der Einwand, der das Auspacken bisher verhindert hat:
-     * Fremde PHP-Dateien auf dem eigenen Webserver sind eine Hintertür.
-     * Dorthin führt kein Weg, der etwas ausführen würde - ausgeliefert
-     * wird nur über die Vorschau, und die schiebt Bytes mit einer festen
-     * Typenliste.
+     * Geschützt ist der Ordner durch `public_html/storage/.htaccess`
+     * (`Require all denied`) - das ist auf Apache die Sperre, und es ist
+     * die einzige. Ausgeliefert wird sonst nur über Vorschau und
+     * Direktbearbeitung, und beide schieben Bytes mit einer festen
+     * Typenliste. Mehr dazu im Kopf von `Build\Uebernahme`.
      */
     public function uebernehmen(Request $request): Response
     {

@@ -984,7 +984,10 @@ final class Pipeline
         if (!$inhalt['ok']) {
             // Ausgepackt ist ausgepackt: ansehen und herunterladen geht,
             // bearbeiten nicht. Das ist ein Ergebnis, kein Fehlschlag.
-            Jobs::progress($job['id'], 'fertig', 100, 'Ausgepackt.');
+            // Weiter zum Bearbeiten: Wer ein Archiv hochlaedt, will es
+        // bearbeiten. Die Oberflaeche folgt diesem Hinweis, sobald der
+        // Auftrag fertig ist.
+        Jobs::progress($job['id'], 'fertig', 100, 'Ausgepackt.', ['redirect' => self::zumBearbeiten($project)]);
             Jobs::finish($job['id'], sprintf(
                 '%d Dateien übernommen. %s',
                 $aus['files'],
@@ -1006,7 +1009,8 @@ final class Pipeline
             Logger::exception($e);
         }
 
-        Jobs::progress($job['id'], 'fertig', 100, 'Übernommen.');
+        Jobs::progress($job['id'], 'fertig', 100, 'Übernommen.',
+            ['redirect' => self::zumBearbeiten($project)]);
         Jobs::finish($job['id'], sprintf(
             '%d Dateien übernommen, %d Seiten und %d Abschnitte eingelesen.%s',
             $aus['files'],
@@ -1022,6 +1026,25 @@ final class Pipeline
             'dateien' => $aus['files'],
             'seiten' => $inhalt['seiten'],
         ]);
+    }
+
+    /**
+     * Wohin es nach dem Übernehmen weitergeht.
+     *
+     * Zum Abschnittseditor, wenn es Abschnitte gibt - sonst zur
+     * Direktbearbeitung. Beide Wege enden dort, wo gearbeitet wird, und
+     * nicht auf einer Seite, von der aus man erst wieder suchen muss.
+     */
+    private static function zumBearbeiten(array $project): string
+    {
+        $basis = '/' . trim((string) Config::get('create_path', 'create'), '/');
+        $hatAbschnitte = (int) Db::value(
+            'SELECT COUNT(*) FROM project_pages WHERE project_id = :p',
+            ['p' => (int) $project['id']],
+            0
+        ) > 0;
+
+        return $basis . ($hatAbschnitte ? '/editor/' : '/direkt/') . (int) $project['id'];
     }
 
     private static function clearPages(int $projectId): void

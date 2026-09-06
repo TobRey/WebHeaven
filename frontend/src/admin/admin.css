@@ -662,6 +662,22 @@
 
 .wa-transfer .wa-form__actions { margin-block-start: auto; }
 
+/* Das Fenster, mit dem eine Website bearbeitet wird: die ganze
+   Schleife an einer Stelle, in der Reihenfolge, in der sie ablaeuft. */
+.wa-einwurf { display: grid; gap: var(--wa-space-4); }
+
+.wa-einwurf__schritte {
+  margin: 0;
+  padding-inline-start: 1.2rem;
+  display: grid;
+  gap: var(--wa-space-2);
+  font-size: var(--wa-text-sm);
+  color: var(--wa-text-muted);
+  line-height: var(--wa-leading-normal);
+}
+
+.wa-einwurf__schritte strong { color: var(--wa-text); }
+
 /* Ausklappbare Hilfe, z.B. "wo finde ich meine FTP-Daten?" */
 .wa-help {
   border: 1px solid var(--wa-border);

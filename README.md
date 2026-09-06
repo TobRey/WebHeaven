@@ -331,10 +331,16 @@ Also uebertraegt der Mensch, mit seinem eigenen FTP-Programm, in beide Richtunge
 WebAtze ist das, was dazwischen liegt:
 
 1. Website beim Kunden herunterladen (FileZilla), als ZIP hier hochladen.
-2. Das Archiv wird nach `storage/projects/<slug>/live` ausgepackt - **ausserhalb des
-   Web-Ordners**. Dorthin fuehrt kein Weg, der etwas ausfuehren wuerde; ausgeliefert
-   wird nur ueber `PreviewController`, und der schiebt Bytes mit einer festen
-   Typenliste. Genau dieser Einwand hatte das Auspacken jahrelang verhindert.
+2. Das Archiv wird nach `storage/projects/<slug>/live` ausgepackt. Genau dieser
+   Schritt war jahrelang der Einwand - fremde PHP-Dateien auf dem eigenen Webserver
+   sind eine Hintertuer -, deshalb hier ohne Beschoenigung, was ihn traegt:
+   `public_html/storage/.htaccess` verbietet jeden direkten Zugriff, und **das ist
+   die einzige Sperre**. Der Ordner liegt unter `public_html`, weil WebAtze als ein
+   Ordner ausgeliefert wird. Auf Apache und cPanel wirkt sie; wer sie loescht oder
+   auf einen Server ohne `.htaccess` umzieht, macht die Kundendateien erreichbar.
+   Der Testlauf prueft sie deshalb mit. Ausgeliefert wird sonst nur ueber
+   `PreviewController` und `DirektController`, und beide schieben Bytes mit einer
+   festen Typenliste.
 3. Liegt `data/site.php` im Archiv - die Website als Daten, geschrieben von
    `AdminKit` -, kommt ihr Inhalt zurueck in die Datenbank. Danach steht im Editor
    wirklich das, was beim Kunden lag: seine Bilder, seine Anfragen, seine im eigenen
@@ -346,10 +352,28 @@ WebAtze ist das, was dazwischen liegt:
    beim Kunden genau die Bilder, die er selbst hochgeladen hat.
 6. Mit dem FTP-Programm hinaufladen.
 
-**Bearbeitbar sind nur von WebAtze gebaute Websites.** Der Editor arbeitet auf Seiten
-und Abschnitten; ein ZIP aus dem Auftragstext ist blosses HTML, und dafuer gibt es
-nichts zu greifen. Solche Websites lassen sich hochladen, ansehen und herunterladen -
-nur nicht aendern, und die Seite sagt das, statt einen leeren Editor zu zeigen.
+### Zwei Editoren, weil es zwei Arten von Website gibt
+
+Der **Abschnittseditor** arbeitet auf Seiten und Abschnitten in der Datenbank. Den gibt
+es nur fuer Websites, die WebAtze selbst gebaut hat.
+
+Ein ZIP vom Hosting des Kunden hat davon nichts - es ist HTML. Frueher stand dort
+"Diese Website hat noch keine Seiten", und das war wortwoertlich richtig und in der
+Sache unbrauchbar: Die Seiten liegen ja da, sie stehen nur nicht in der Datenbank.
+Dafuer gibt es die **Direktbearbeitung** (`/create/direkt/<id>`):
+
+* Die Seite laeuft in einem Rahmen mit **gleicher Herkunft** wie der Adminbereich -
+  deshalb greift das Skript daneben direkt hinein. In die Kundendatei wird nichts
+  eingeschleust, und beim Speichern bleibt keine Spur der Bearbeitung.
+* **Text anklicken und schreiben**, **Bild anklicken und tauschen**, Seite fuer Seite.
+  Verschieben und neue Abschnitte gibt es nicht - dafuer braucht es das Datenmodell.
+* Gespeichert wird die Datei selbst, mit **denselben Zeilenenden wie vorher**. Sonst
+  gaelte beim naechsten Vergleich jede Zeile als geaendert.
+* Der Weg vom Kunden aus: *Kunde → Website editieren →* Archiv einwerfen, bearbeiten,
+  Paket herausnehmen.
+
+Der Ordner, in dem gearbeitet wird, ist derselbe `live`-Ordner - was dort steht, faehrt
+beim naechsten Paket mit hinaus.
 
 **Was noch nicht draussen ist, steht in der Liste.** Nicht als gepflegtes Merkmal,
 sondern aus den Daten: Ist die juengste Aenderung an einer Seite oder einem Abschnitt
@@ -495,7 +519,7 @@ php -S 127.0.0.1:8080 -t public_html public_html/index.php
 
 | Befehl | Wofür |
 |---|---|
-| `php tests/run.php` | der Testlauf (2126 Prüfungen) |
+| `php tests/run.php` | der Testlauf (2154 Prüfungen) |
 | `php tests/run.php --seiten-festhalten` | den Aufbau der eigenen Seiten neu festhalten |
 | `php tools/eigene-website-uebernehmen.php` | zeigt, was aus der eigenen Website als Daten entstünde |
 | `php tools/probelauf/durchlauf.php` | eine ganze Website bauen, vom Formular bis zum Paket |

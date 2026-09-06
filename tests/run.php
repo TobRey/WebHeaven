@@ -3053,8 +3053,8 @@ test('Der Stand kommt als Archiv herein und geht als Archiv hinaus', function ()
         $ohne = \WebAtze\Build\Uebernahme::inhalteUebernehmen($projekt);
 
         ok(!$ohne['ok'], 'Ohne data/site.php wird nichts uebernommen');
-        ok(str_contains($ohne['error'], 'nicht im Editor ändern'),
-            'Und es steht da, warum');
+        ok(str_contains($ohne['error'], 'direkt in der Seite ändern'),
+            'Und es steht da, wie es trotzdem geht');
         is($vorher, $wesentlich($id), 'Der bisherige Stand bleibt unangetastet');
     } finally {
         \WebAtze\Core\Db::delete('project_sections', 'project_id = :p', ['p' => $id]);
@@ -3202,6 +3202,156 @@ test('Was noch nicht heruntergeladen wurde, steht da', function (): void {
         \WebAtze\Core\Db::delete('project_sections', 'project_id = :p', ['p' => $id]);
         \WebAtze\Core\Db::delete('project_pages', 'project_id = :p', ['p' => $id]);
         \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
+    }
+});
+
+// ==================================================================
+test('Eine fremde Website laesst sich direkt bearbeiten', function (): void {
+    // "Diese Website hat noch keine Seiten" war wortwoertlich richtig
+    // und in der Sache unbrauchbar: Die Seiten liegen ja da, sie stehen
+    // nur nicht in der Datenbank. Ein ZIP vom Hosting des Kunden hat
+    // keine Abschnitte - Texte und Bilder hat es trotzdem.
+    $id = (int) \WebAtze\Core\Db::insert('projects', [
+        'name' => 'Fremd', 'slug' => 'fremd-' . bin2hex(random_bytes(4)),
+        'status' => 'ready', 'brief' => '{}', 'theme' => '{}',
+        'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
+    ]);
+
+    $projekt = \WebAtze\Core\Db::first('SELECT * FROM projects WHERE id = :id', ['id' => $id]);
+    $ordner = \WebAtze\Build\Uebernahme::ordner($projekt);
+
+    try {
+        ensure_dir($ordner . '/unterseiten');
+        ensure_dir($ordner . '/assets');
+        file_put_contents($ordner . '/index.html', '<!DOCTYPE html><html><body><h1>Hallo</h1></body></html>');
+        file_put_contents($ordner . '/unterseiten/kontakt.html', '<html><body>Kontakt</body></html>');
+        file_put_contents($ordner . '/assets/stil.css', 'body{}');
+        file_put_contents($ordner . '/geheim.php', '<?php echo "nicht ausfuehren";');
+
+        // ------------------------------------------------ die Seitenliste
+        $seiten = \WebAtze\Http\DirektController::seitenListe($projekt);
+
+        is(['index.html', 'unterseiten/kontakt.html'], $seiten, 'Beide Seiten stehen zur Wahl');
+        is('index.html', $seiten[0], 'Und die Startseite zuerst');
+
+        // --------------------------------------------- die Pfadaufloesung
+        //
+        // Dieselben Angriffe wie ueberall, wo ein Pfad von aussen kommt.
+        $draussen = sys_get_temp_dir() . '/wa-direkt-geheim-' . bin2hex(random_bytes(4)) . '.txt';
+        file_put_contents($draussen, 'NICHT HERAUSGEBEN');
+
+        foreach ([
+            'Ein ".." fuehrt nicht hinaus' => '../../../etc/passwd',
+            'Ein absoluter Pfad auch nicht' => '/etc/passwd',
+            'Und ein Nullbyte ebenso wenig' => "index.html\0.png",
+            'Was es nicht gibt, gibt es nicht' => 'gibtsnicht.html',
+        ] as $was => $pfad) {
+            ok(\WebAtze\Http\DirektController::aufloesen($projekt, $pfad) === null, $was);
+        }
+
+        // Ein Symlink verraet sich im Text nicht, im aufgeloesten Pfad
+        // schon.
+        symlink($draussen, $ordner . '/tuer.txt');
+
+        ok(\WebAtze\Http\DirektController::aufloesen($projekt, 'tuer.txt') === null,
+            'Ein Symlink gibt nichts her');
+
+        // Was drinnen liegt, kommt heraus - auch tief drin.
+        ok(\WebAtze\Http\DirektController::aufloesen($projekt, 'index.html') !== null,
+            'Die Startseite laesst sich aufloesen');
+        ok(\WebAtze\Http\DirektController::aufloesen($projekt, 'unterseiten/kontakt.html') !== null,
+            'Und die Unterseite auch');
+
+        // Ein leerer Pfad meint die Startseite - so wie im Browser.
+        is(
+            \WebAtze\Http\DirektController::aufloesen($projekt, 'index.html'),
+            \WebAtze\Http\DirektController::aufloesen($projekt, ''),
+            'Leer heisst Startseite'
+        );
+
+        @unlink($ordner . '/tuer.txt');
+        @unlink($draussen);
+    } finally {
+        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
+    }
+});
+
+// ==================================================================
+test('Eine ganze Seite kommt ungekuerzt an', function (): void {
+    // Der Fehler, den der Durchgang gefunden hat: Gespeichert wurde mit
+    // input(), und das schneidet bei 2000 Zeichen ab und entfernt jeden
+    // Zeilenumbruch. Die Kundenseite stand danach in einer einzigen
+    // Zeile - und war ab dem zweitausendsten Zeichen weg. Die
+    // Laengenpruefung dahinter sah eine Zahl, die schon nicht mehr
+    // stimmte, und meldete nichts.
+    $lang = "<html>\n<body>\n" . str_repeat("<p>Ein Absatz mit Text.</p>\n", 300) . "</body>\n</html>";
+
+    ok(strlen($lang) > 5000, 'Die Probeseite ist gross genug (' . strlen($lang) . ' Bytes)');
+
+    $anfrage = new \WebAtze\Core\Request([], ['inhalt' => $lang], [], [], []);
+
+    // So war es, und so darf es nicht bleiben.
+    ok(strlen($anfrage->input('inhalt')) < strlen($lang), 'input() kuerzt - deshalb taugt es hier nicht');
+    ok(!str_contains($anfrage->input('inhalt'), "\n"), 'Und wirft die Zeilenumbrueche weg');
+
+    // Und so ist es jetzt.
+    is($lang, $anfrage->roh('inhalt', 1024 * 1024), 'roh() gibt die Seite Zeichen fuer Zeichen zurueck');
+    ok(str_contains($anfrage->roh('inhalt', 1024 * 1024), "\n"), 'Die Zeilenumbrueche bleiben');
+
+    // Zu gross gibt leer und nicht abgeschnitten: Ein halb gespeicherter
+    // Kundenauftritt waere schlimmer als ein nicht gespeicherter.
+    is('', $anfrage->roh('inhalt', 100), 'Zu gross gibt leer statt einer halben Seite');
+
+    // Und das Speichern benutzt wirklich diesen Weg.
+    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Http/DirektController.php');
+
+    ok(str_contains($quelle, "\$request->roh('inhalt'"), 'Der Speicherweg liest ungefiltert');
+    ok(!str_contains($quelle, "\$request->input('inhalt'"), 'Und nicht mehr gefiltert');
+
+    // Zeilenenden bleiben, wie die Datei sie hatte - sonst gilt beim
+    // naechsten Vergleich jede Zeile als geaendert.
+    ok(str_contains($quelle, 'zeilenendenAngleichen'), 'Die Zeilenenden werden angeglichen');
+});
+
+// ==================================================================
+test('Der ausgepackte Stand liegt nicht offen im Netz', function (): void {
+    // Das ist die heikelste Stelle des ganzen Umbaus, und sie haengt an
+    // einer einzigen Datei: Ausgepackt wird unterhalb von public_html,
+    // weil WebAtze als ein Ordner ausgeliefert wird. Ohne die Sperre
+    // waeren fremde PHP-Dateien erreichbar - und ausfuehrbar.
+    $sperre = STORAGE_DIR . '/.htaccess';
+
+    ok(is_file($sperre), 'storage/.htaccess ist da');
+    ok(str_contains((string) file_get_contents($sperre), 'Require all denied'),
+        'Und verbietet den Zugriff');
+
+    // Und wenn sie fehlt, legt WebAtze sie nach. Eine Installation, die
+    // nur je aktualisiert wurde, koennte sie verloren haben - das faellt
+    // von selbst nie auf.
+    $sicherung = (string) file_get_contents($sperre);
+    unlink($sperre);
+
+    \WebAtze\Build\Uebernahme::sperreSichern();
+
+    ok(is_file($sperre), 'Fehlt sie, wird sie nachgelegt');
+    ok(str_contains((string) file_get_contents($sperre), 'Require all denied'),
+        'Und zwar mit demselben Inhalt');
+
+    file_put_contents($sperre, $sicherung);
+
+    // Die Auslieferung schiebt Bytes, sie fuehrt nichts aus: Eine .php
+    // steht in keiner der beiden Typenlisten.
+    foreach ([
+        'Http/PreviewController.php' => 'TYPES',
+        'Http/DirektController.php' => 'TYPEN',
+    ] as $datei => $liste) {
+        $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/' . $datei);
+        $von = strpos($quelle, 'const ' . $liste);
+        $bis = strpos($quelle, '];', (int) $von);
+
+        ok($von !== false, $datei . ' hat eine Typenliste');
+        ok(!str_contains(substr($quelle, (int) $von, (int) $bis - (int) $von), "'php'"),
+            $datei . ' kennt kein php');
     }
 });
 

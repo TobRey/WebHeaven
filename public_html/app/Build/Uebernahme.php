@@ -22,12 +22,26 @@ use WebAtze\Domain\Publications;
  * tatsächlich das, was beim Kunden lag: seine hochgeladenen Bilder,
  * seine im Backend geänderten Texte, seine eingegangenen Anfragen.
  *
- * Ausgepackt wird nach `storage/projects/<slug>/live` - ausserhalb des
- * Web-Ordners. Das war der Einwand, der das Auspacken bisher verhindert
- * hat: Fremde PHP-Dateien auf dem eigenen Webserver sind eine
- * Hintertür. Dort unten führt kein Weg hin, der etwas ausführen würde;
- * ausgeliefert wird nur über `PreviewController`, und der schiebt Bytes
- * mit einer festen Typenliste.
+ * Ausgepackt wird nach `storage/projects/<slug>/live`. Das war der
+ * Einwand, der das Auspacken bisher verhindert hat: Fremde PHP-Dateien
+ * auf dem eigenen Webserver sind eine Hintertür.
+ *
+ * Was diesen Ordner schützt - genau und ohne Beschönigung:
+ *
+ *   1. `public_html/storage/.htaccess` verbietet jeden direkten Zugriff
+ *      (`Require all denied`). Auf Apache, und damit auf cPanel, ist das
+ *      wirksam. **Es ist die einzige Sperre**: Der Ordner liegt
+ *      unterhalb von `public_html`, weil WebAtze als ein Ordner
+ *      ausgeliefert wird. Wer diese Datei löscht oder auf einen Server
+ *      ohne `.htaccess` umzieht, macht die Kundendateien erreichbar -
+ *      und PHP darin ausführbar.
+ *   2. Ausgeliefert wird sonst nur über `PreviewController` und
+ *      `DirektController`, und beide schieben Bytes mit einer festen
+ *      Typenliste. Eine `.php` kommt dort als Datenstrom heraus, nicht
+ *      als laufendes Programm.
+ *
+ * Der Testlauf prüft Punkt 1 mit, damit die Sperre nicht eines Tages
+ * still verschwindet.
  */
 final class Uebernahme
 {
@@ -85,6 +99,14 @@ final class Uebernahme
             ));
         }
 
+        // Die Sperre steht, bevor etwas darunter liegt.
+        //
+        // Sie kommt aus dem Vollpaket, nicht aus dem Update - eine
+        // Installation, die nur je aktualisiert wurde, koennte sie
+        // verloren haben. Das hier faellt nicht auf, wenn es fehlt: Der
+        // Ordner ist dann einfach offen. Also wird sie nachgelegt.
+        self::sperreSichern();
+
         $ordner = self::ordner($projekt);
 
         // Der alte Stand kommt weg, bevor der neue kommt. Sonst bleiben
@@ -129,6 +151,36 @@ final class Uebernahme
         return ['ok' => true, 'files' => $anzahl, 'bytes' => $bytes, 'error' => '', 'ordner' => $ordner];
     }
 
+    /**
+     * Dafür sorgen, dass `storage` gesperrt ist.
+     *
+     * Der Inhalt ist derselbe wie im Vollpaket. Auf nginx greift eine
+     * `.htaccess` nicht - das steht seit jeher in `install.php`, und es
+     * bleibt wahr. Auf Apache und damit auf cPanel, wo WebAtze laeuft,
+     * greift sie.
+     */
+    public static function sperreSichern(): void
+    {
+        $datei = STORAGE_DIR . '/.htaccess';
+
+        if (is_file($datei)) {
+            return;
+        }
+
+        @file_put_contents($datei, <<<'CONF'
+            # Kein direkter Zugriff auf den Programmcode.
+            <IfModule mod_authz_core.c>
+                Require all denied
+            </IfModule>
+            <IfModule !mod_authz_core.c>
+                Order allow,deny
+                Deny from all
+            </IfModule>
+            CONF);
+
+        Logger::warning('storage/.htaccess fehlte und wurde neu angelegt.');
+    }
+
     /** Wo der ausgepackte Stand einer Website liegt. */
     public static function ordner(array $projekt): string
     {
@@ -170,10 +222,13 @@ final class Uebernahme
         $datei = self::ordner($projekt) . '/data/site.php';
 
         if (!is_file($datei)) {
+            // Kein Fehler, sondern eine Auskunft: Die Website ist nicht
+            // hier gebaut worden, also gibt es keine Abschnitte. Texte
+            // und Bilder lassen sich trotzdem aendern - direkt in der
+            // Datei.
             return self::inhaltFehler(
-                'In diesem Archiv liegt keine data/site.php. Das ist keine von WebAtze '
-                . 'gebaute Website - sie lässt sich ansehen und herunterladen, aber nicht '
-                . 'im Editor ändern.'
+                'Keine Abschnittsdaten im Archiv - Texte und Bilder lassen sich '
+                . 'trotzdem direkt in der Seite ändern.'
             );
         }
 

@@ -162,6 +162,38 @@ final class Request
         return mb_substr(trim($value), 0, $maxLength);
     }
 
+    /**
+     * Ein Wert, so wie er ankam - ungefiltert.
+     *
+     * Der einzige Leser, der nichts wegnimmt, und deshalb mit Bedacht zu
+     * benutzen: Wer ihn nimmt, ist selbst dafür zuständig, dass das
+     * Ergebnis nirgends als HTML ausgegeben wird.
+     *
+     * Es gibt ihn, weil `input()` bei 2000 Zeichen abschneidet und jeden
+     * Zeilenumbruch entfernt, und `text()` bei 20 000. Für ein Formular
+     * ist das richtig. Für eine ganze HTML-Seite ist es die stille
+     * Zerstörung: Sie käme gekürzt an, und die Längenprüfung dahinter
+     * sähe eine Zahl, die schon nicht mehr stimmt. Genau so ist es beim
+     * Speichern einer Kundenseite passiert - die Datei stand danach in
+     * einer einzigen Zeile.
+     *
+     * Die Grenze steht deshalb hier vorn, in Bytes, und schneidet nicht
+     * ab: Was zu gross ist, gibt einen leeren Text, damit der Aufrufer
+     * es merkt.
+     */
+    public function roh(string $key, int $maxBytes = 65536): string
+    {
+        $value = $this->body[$key] ?? $this->jsonValue($key) ?? '';
+
+        if (!is_scalar($value)) {
+            return '';
+        }
+
+        $value = (string) $value;
+
+        return strlen($value) > $maxBytes ? '' : $value;
+    }
+
     /** Liste von Werten, z.B. mehrere Checkboxen. */
     public function arrayOf(string $key): array
     {

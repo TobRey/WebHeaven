@@ -379,6 +379,13 @@ final class Routes
         // bleibt, sind die Adressen überall dieselben - hier gegen die
         // Datenbank, beim Kunden gegen data/site.php.
         $router->group(['auth'], static function (Router $r) use ($base): void {
+            // Eine fremde Website bearbeiten: keine Abschnitte, sondern
+            // die Datei selbst. Die Seite laeuft in einem Rahmen mit
+            // gleicher Herkunft - deshalb liegen die Dateien hier hinter
+            // der Anmeldung und nicht unter der Vorschau, deren Kennwort
+            // nach einem Tag ablaeuft.
+            $r->get($base . '/direkt/{id}', 'DirektController@index');
+            $r->get($base . '/direkt/{id}/datei/{pfad:.+}', 'DirektController@datei');
             $r->get($base . '/editor/{id}', 'EditorController@index');
             $r->get($base . '/editor/{id}/seite/{seite}/ansicht', 'EditorController@view');
             $r->get($base . '/editor/{id}/seite/{seite}/fassungen', 'EditorController@versions');
@@ -389,6 +396,8 @@ final class Routes
         });
 
         $router->group(['auth', 'csrf'], static function (Router $r) use ($base): void {
+            $r->post($base . '/direkt/{id}/speichern', 'DirektController@speichern');
+            $r->post($base . '/direkt/{id}/bild', 'DirektController@bild');
             $r->post($base . '/editor/{id}/ziehen', 'EditorController@move');
             $r->post($base . '/editor/{id}/einsetzen', 'EditorController@add');
             $r->post($base . '/editor/{id}/entfernen', 'EditorController@remove');

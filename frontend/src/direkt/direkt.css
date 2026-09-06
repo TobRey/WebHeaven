@@ -1,0 +1,125 @@
+/* ------------------------------------------------------------------ */
+/* Eine fremde Website bearbeiten                                      */
+/*                                                                     */
+/* Derselbe bildschirmfuellende Aufsatz wie beim Editor daneben - und   */
+/* aus demselben Grund: Wer eine Seite bearbeitet, will die Seite       */
+/* sehen und nicht den Rahmen darum.                                   */
+/* ------------------------------------------------------------------ */
+
+.wa-direkt {
+  --wad-bg: #0b0b18;
+  --wad-flaeche: #15162a;
+  --wad-rand: rgb(255 255 255 / 0.12);
+  --wad-text: #eceefb;
+  --wad-leise: #9a9cb8;
+  --wad-gut: #2fe0dc;
+  --wad-offen: #ffc861;
+  --wad-schlecht: #ff8f8f;
+
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  background: var(--wad-bg);
+  color: var(--wad-text);
+  z-index: 40;
+}
+
+.wa-direkt__leiste {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  background: var(--wad-flaeche);
+  border-block-end: 1px solid var(--wad-rand);
+  flex-wrap: wrap;
+}
+
+.wa-direkt__gruppe { display: flex; align-items: center; gap: 0.5rem; }
+/* Ausdruecklich, nicht geerbt: Der Adminbereich faerbt <strong> nach
+   dem gewaehlten Modus, die Flaeche hier ist aber immer dunkel. Im
+   Hellen stand sonst Dunkelblau auf Dunkelblau - gemessen 1.1:1. */
+.wa-direkt__name { font-weight: 600; color: var(--wad-text); white-space: nowrap; }
+.wa-direkt strong { color: var(--wad-text); }
+.wa-direkt__form { display: contents; }
+
+.wa-direkt__stand {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.08);
+  color: var(--wad-leise);
+}
+
+.wa-direkt__stand[data-art='offen'] { color: var(--wad-offen); }
+.wa-direkt__stand[data-art='gut'] { color: var(--wad-gut); }
+.wa-direkt__stand[data-art='schlecht'] { color: var(--wad-schlecht); }
+
+.wa-direkt__hinweis {
+  padding: 0.5rem 1rem;
+  font-size: 0.8rem;
+  color: var(--wad-leise);
+  background: color-mix(in srgb, var(--wad-flaeche) 60%, var(--wad-bg));
+  border-block-end: 1px solid var(--wad-rand);
+}
+
+.wa-direkt__hinweis strong { color: var(--wad-text); }
+
+/* Die Buehne: weisser Grund, damit eine Website mit durchsichtigem
+   Hintergrund nicht auf Schwarz steht und unlesbar wird. */
+.wa-direkt__buehne {
+  overflow: hidden;
+  background: #fff;
+}
+
+.wa-direkt__rahmen {
+  inline-size: 100%;
+  block-size: 100%;
+  border: 0;
+  display: block;
+}
+
+.wa-direkt__leer {
+  display: grid;
+  place-items: center;
+  padding: 2rem;
+  grid-row: 2 / -1;
+}
+
+.wa-direkt__leer > div {
+  max-inline-size: 34rem;
+  text-align: center;
+  display: grid;
+  gap: 1rem;
+  justify-items: center;
+}
+
+.wa-direkt__leer h2 { margin: 0; font-size: 1.3rem; }
+.wa-direkt__leer p { margin: 0; color: var(--wad-leise); line-height: 1.6; }
+
+/* Die Knoepfe folgen der Flaeche, nicht dem Adminthema.
+   Im hellen Modus stuende sonst Dunkelgrau auf Dunkelblau - gemessen
+   2.49:1, dieselbe Falle wie beim Editor nebenan. */
+.wa-direkt .wa-btn {
+  --btn-bg: rgb(255 255 255 / 0.07);
+  --btn-fg: var(--wad-text);
+  --btn-border: var(--wad-rand);
+}
+
+.wa-direkt .wa-btn--quiet {
+  --btn-bg: transparent;
+  --btn-fg: var(--wad-leise);
+  --btn-border: transparent;
+}
+
+.wa-direkt .wa-btn--quiet:hover,
+.wa-direkt .wa-btn--quiet:focus-visible { --btn-fg: var(--wad-text); }
+
+.wa-direkt .wa-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+.wa-direkt .wa-select {
+  background: rgb(255 255 255 / 0.05);
+  border-color: var(--wad-rand);
+  color: var(--wad-text);
+}

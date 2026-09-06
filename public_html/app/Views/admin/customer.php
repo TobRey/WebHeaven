@@ -363,26 +363,40 @@ $neu = $id === 0;
                                 </a>
 
                                 <?php
-                                /* Der aktuelle Stand als ZIP – nicht das
-                                   zuletzt Gebaute, sondern das, was gerade
-                                   wirklich auf dem Server liegt. Nur für
-                                   selbst gebaute Websites: Bei einer nur
-                                   eingetragenen gibt es keinen Zugang. */ ?>
-                                <?php if (!$handgemacht): ?>
-                                    <form method="post"
-                                          action="<?= e($base) ?>/projekt/<?= (int) $w['id'] ?>/stand-holen">
-                                        <?= Csrf::field() ?>
-                                        <button type="submit" class="wa-btn wa-btn--small">
-                                            Stand als ZIP
-                                        </button>
-                                    </form>
-                                <?php endif; ?>
+                                /* Der Anfang der Schleife: Archiv einwerfen,
+                                   bearbeiten, Paket herausnehmen. Vorher stand
+                                   hier "Stand als ZIP" und holte ihn über FTP -
+                                   der Weg ist gestrichen, weil er von einem
+                                   Hosting zum anderen nicht durchkommt. */ ?>
+                                <button type="button" class="wa-btn wa-btn--primary wa-btn--small"
+                                        data-dialog="bearbeiten-<?= (int) $w['id'] ?>">
+                                    Website editieren
+                                </button>
                             </td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
             </table>
         </div>
+
+        <?php
+        /**
+         * Die Fenster hinter der Tabelle.
+         *
+         * Ein <dialog> darf nicht in einem <tbody> liegen - und im <td>
+         * erbte es die Breite einer schmalen Spalte am rechten Rand.
+         */
+        ?>
+        <?php foreach ($websites as $w): ?>
+            <?= View_partial('partials/dialog', [
+                'id' => 'bearbeiten-' . (int) $w['id'],
+                'titel' => (string) $w['name'] . ' bearbeiten',
+                'inhalt' => View_partial('partials/website-einwurf', [
+                    'website' => $w,
+                    'base' => $base,
+                ]),
+            ]) ?>
+        <?php endforeach; ?>
     <?php endif; ?>
 </section>
 <?php

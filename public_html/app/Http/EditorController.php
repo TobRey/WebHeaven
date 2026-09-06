@@ -51,9 +51,15 @@ final class EditorController
             ['p' => (int) $projekt['id']]
         );
 
+        // Keine Abschnitte? Dann ist es keine hier gebaute Website -
+        // sondern eine, die als Archiv hereinkam.
+        //
+        // "Diese Website hat noch keine Seiten" war wortwoertlich richtig
+        // und in der Sache unbrauchbar: Die Seiten liegen ja da, sie
+        // stehen nur nicht in der Datenbank. Dafuer gibt es die
+        // Direktbearbeitung - dort wird die Datei selbst geaendert.
         if ($seiten === []) {
-            Session::flash('error', 'Diese Website hat noch keine Seiten.');
-            return Response::redirect(self::base() . '/projekt/' . (int) $projekt['id'])->noCache();
+            return Response::redirect(self::base() . '/direkt/' . (int) $projekt['id'])->noCache();
         }
 
         $seiteId = $request->int('seite') ?: (int) $seiten[0]['id'];

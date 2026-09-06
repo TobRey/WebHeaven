@@ -35,8 +35,22 @@ final class ZipExporter
         $slug = (string) $project['slug'];
         $source = STORAGE_DIR . '/projects/' . $slug . '/dist';
 
+        // Ohne gebauten Stand: der uebernommene.
+        //
+        // Eine fremde Website wird hier nie gebaut - sie kommt als
+        // Archiv herein, wird bearbeitet und geht als Archiv hinaus.
+        // "Es gibt noch keine gebaute Website" waere fuer genau diesen
+        // Fall die falsche Auskunft: Es gibt sie, sie stammt nur nicht
+        // aus dem Generator.
         if (!is_dir($source)) {
-            throw new RuntimeException('Es gibt noch keine gebaute Website zum Packen.');
+            $source = Uebernahme::ordner($project);
+        }
+
+        if (!is_dir($source)) {
+            throw new RuntimeException(
+                'Es liegt keine Website zum Packen bereit - weder eine gebaute noch '
+                . 'ein hochgeladener Stand.'
+            );
         }
 
         $version = (int) Db::value(
@@ -67,7 +81,9 @@ final class ZipExporter
         //
         // Der Bau hat Vorrang: Was er erzeugt hat, liegt schon im
         // Archiv und wird nicht ueberschrieben.
-        $files += self::ergaenzen($zip, Uebernahme::ordner($project));
+        if ($source !== Uebernahme::ordner($project)) {
+            $files += self::ergaenzen($zip, Uebernahme::ordner($project));
+        }
 
         // Eine Anleitung, die auch in einem Jahr noch verständlich ist.
         $zip->addFromString('ANLEITUNG.txt', self::readme($project, $version));
