@@ -1211,6 +1211,16 @@ final class Schema
             '049_empfang_secret' => '
                 ALTER TABLE projects ADD COLUMN empfang_secret {string:64} NOT NULL DEFAULT \'\';
             ',
+
+            // Eigener Schluessel fuer die dauerhafte Leseschnittstelle.
+            //
+            // Nicht derselbe wie der des Empfaengers: Der wird von Hand
+            // hingelegt und loescht sich wieder, diese hier bleibt
+            // liegen. Zwei Lebensdauern, zwei Schluessel - sonst
+            // widerruft das Entfernen des einen den anderen nicht.
+            '050_dateien_secret' => '
+                ALTER TABLE projects ADD COLUMN dateien_secret {string:64} NOT NULL DEFAULT \'\';
+            ',
         ];
     }
 

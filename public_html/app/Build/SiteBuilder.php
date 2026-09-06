@@ -511,6 +511,21 @@ final class SiteBuilder
             $copy('wa-bruecke.php');
         }
 
+        // Die Leseschnittstelle liegt von Anfang an dabei.
+        //
+        // Damit gilt fuer eine hier gebaute Website sofort, was fuer eine
+        // fremde erst nach dem ersten Hochladen gilt: "Stand holen"
+        // braucht keinen FTP-Zugang und keinen Handgriff. Ihr Schluessel
+        // steht in der Datei selbst - anders als bei der Bruecke, die ihn
+        // aus data/config.php liest: Diese Datei soll auch auf einer
+        // Website funktionieren, die kein data/ hat.
+        $lese = \WebAtze\Build\Empfang::dauerdatei((int) ($this->project['id'] ?? 0));
+
+        if ($lese !== '') {
+            write_file_atomic($this->outputDir . '/' . \WebAtze\Build\Empfang::DAUERDATEI, $lese);
+            $written++;
+        }
+
         return $written;
     }
 

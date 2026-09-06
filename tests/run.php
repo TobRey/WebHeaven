@@ -7414,34 +7414,201 @@ test('Hinauf und herunter, beides ueber HTTPS', function (): void {
 
         ok($stand['ok'], 'Und derselbe Stand kommt zurueck');
         is(3, $stand['files'], 'Wieder alle drei');
-        ok($stand['aufgeraeumt'], 'Ohne Haekchen raeumt er sich diesmal weg');
-        ok(!is_file($platz['ordner'] . '/webatze-empfang.php'), 'Und ist danach weg');
+
+        // Geholt wird ueber die dauerhafte Leseschnittstelle - und die
+        // raeumt sich nicht weg. Sie ist kein Besuch, sie gehoert zur
+        // Website; das Haekchen betrifft nur den Empfaenger.
+        ok(!$stand['aufgeraeumt'], 'Die Leseschnittstelle raeumt sich nicht weg');
+        ok(is_file($platz['ordner'] . '/' . \WebAtze\Build\Empfang::DAUERDATEI),
+            'Und liegt danach noch da');
 
         $gelesen = new ZipArchive();
         $gelesen->open($zurueck);
         $inhalt = (string) $gelesen->getFromName('index.html');
-        $anzahl = $gelesen->numFiles;
+        $namen = [];
+
+        for ($i = 0; $i < $gelesen->numFiles; $i++) {
+            $namen[] = (string) $gelesen->getNameIndex($i);
+        }
+
         $gelesen->close();
 
-        is(3, $anzahl, 'Im Rueckarchiv liegen drei Dateien');
+        is(3, count($namen), 'Im Rueckarchiv liegen drei Dateien');
         is('<h1>Hallo</h1>', $inhalt, 'Und der Inhalt ist derselbe');
 
-        // Ist er weg, sagt die Probe das - und nennt den Grund. Eine
-        // Website mit Front-Controller antwortet auf eine fehlende Datei
-        // mit 200 und ihrer Startseite; "Antwort 200 vom Empfaenger"
-        // waere dann die Unwahrheit an der heikelsten Stelle.
+        // Das Werkzeug gehoert nicht ins Werkstueck. In beiden
+        // Schnittstellendateien steht ein Schluessel - der hat in einem
+        // Archiv nichts verloren, das heruntergeladen und weitergereicht
+        // wird.
+        ok(!in_array(\WebAtze\Build\Empfang::DAUERDATEI, $namen, true),
+            'Die Leseschnittstelle steht nicht im Archiv');
+        ok(!in_array(\WebAtze\Build\Empfang::DATEI, $namen, true),
+            'Der Empfaenger auch nicht');
+        ok(!in_array('.webatze-einmal', $namen, true), 'Und kein Merker');
+
+        // Und die Probe sagt jetzt, welcher der beiden Wege offensteht.
         $danach = \WebAtze\Build\Empfang::erreichbar($projekt);
 
-        ok(!$danach['ok'], 'Danach meldet er sich nicht mehr');
-        ok(str_contains($danach['error'], 'nicht der Empfänger')
-            || str_contains($danach['error'], '404'),
-            'Und der Grund steht dabei, nicht bloss eine Zahl');
+        ok($danach['ok'], 'Danach steht der Weg immer noch offen');
+        is('dauerhaft', $danach['art'], 'Und zwar der dauerhafte');
+
+        // Sperren heisst: neuer Schluessel. Loeschen kann sie sich nicht
+        // - sie darf ja nicht schreiben. Also weist die liegende Datei
+        // von da an alles ab, was ankommt.
+        \WebAtze\Build\Empfang::neuerLeseschluessel($id);
+        \WebAtze\Build\Empfang::neuerSchluessel($id);
+
+        $gesperrt = \WebAtze\Build\Empfang::erreichbar($projekt);
+
+        ok(!$gesperrt['ok'], 'Nach dem Sperren meldet sich keine mehr');
+        ok(is_file($platz['ordner'] . '/' . \WebAtze\Build\Empfang::DAUERDATEI),
+            'Obwohl die Datei noch dort liegt');
     } finally {
         empfaenger_ende($platz);
         @unlink($archiv);
         @unlink($zurueck);
         \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
     }
+});
+
+// ==================================================================
+test('Die Leseschnittstelle liest - und tut sonst nichts', function (): void {
+    // Sie bleibt auf der Kundenwebsite liegen, und das ist der ganze
+    // Unterschied zum Empfaenger: Der wird hingelegt und loescht sich
+    // wieder. Was dauerhaft offensteht, darf deshalb nicht schreiben
+    // koennen - und keine Geheimnisse herausgeben.
+    $schluessel = bin2hex(random_bytes(32));
+    $platz = empfaenger_platz($schluessel, 'dauerhaft');
+
+    if ($platz === null) {
+        fehler('Der Testserver fuer die Leseschnittstelle startete nicht');
+
+        return;
+    }
+
+    try {
+        // Eine kleine Website mit einem Geheimnis darin.
+        mkdir($platz['ordner'] . '/data', 0777, true);
+        mkdir($platz['ordner'] . '/assets', 0777, true);
+        file_put_contents($platz['ordner'] . '/index.html', '<h1>Hallo</h1>');
+        file_put_contents($platz['ordner'] . '/assets/stil.css', 'body{}');
+        file_put_contents($platz['ordner'] . '/data/config.php', "<?php return ['bridge_secret' => 'GEHEIM'];");
+        file_put_contents($platz['ordner'] . '/webatze-empfang.php', '<?php // der Empfaenger');
+
+        // -------------------------------------------- was sie koennen soll
+        $hallo = empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel);
+
+        ok($hallo['ok'], 'Sie meldet sich');
+        is('dauerhaft', (string) ($hallo['daten']['art'] ?? ''),
+            'Und sagt, welche der beiden sie ist');
+
+        $liste = empfaenger_lauf($platz, ['aktion' => 'liste'], $schluessel);
+        $namen = array_column((array) ($liste['daten']['dateien'] ?? []), 'pfad');
+
+        sort($namen);
+        is(['assets/stil.css', 'index.html'], $namen, 'Sie nennt die Website');
+
+        is('<h1>Hallo</h1>', base64_decode(
+            (string) (empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'index.html'],
+                $schluessel)['daten']['inhalt'] ?? ''),
+            true
+        ), 'Und gibt heraus, was dort steht');
+
+        // ------------------------------------------ was sie nicht darf
+        //
+        // Das Geheimnis zuerst: In data/config.php steht der Schluessel
+        // der Bruecke. Eine Lesestelle, die den herausgibt, ist keine
+        // Lesestelle mehr, sondern der Generalschluessel.
+        ok(!in_array('data/config.php', $namen, true), 'config.php steht nicht in der Liste');
+        ok(!in_array('wa-dateien.php', $namen, true), 'Sie selbst auch nicht');
+        ok(!in_array('webatze-empfang.php', $namen, true), 'Und der Empfaenger auch nicht');
+        ok(!in_array('.webatze-gelesen', $namen, true), 'Kein Merker');
+
+        // Aber sie sagt, dass etwas fehlt. Ein Archiv, dem stillschweigend
+        // etwas fehlt, wird irgendwann fuer eine Sicherung gehalten.
+        ok((int) ($liste['daten']['zurueckgehalten'] ?? 0) > 0,
+            'Sie zaehlt, was sie zurueckhaelt, statt es zu verschweigen');
+
+        foreach ([
+            'config.php wird nicht herausgegeben' => 'data/config.php',
+            'Sie selbst auch nicht' => 'wa-dateien.php',
+            'Der Empfaenger auch nicht' => 'webatze-empfang.php',
+        ] as $was => $pfad) {
+            $versuch = empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => $pfad], $schluessel);
+
+            ok(!$versuch['ok'], $was);
+            ok(!str_contains(
+                base64_decode((string) ($versuch['daten']['inhalt'] ?? ''), true) ?: '',
+                'GEHEIM'
+            ), 'Und der Inhalt kommt auch nicht durch (' . $pfad . ')');
+        }
+
+        // Und schreiben kann sie ueberhaupt nicht.
+        $schreiben = empfaenger_lauf($platz, [
+            'aktion' => 'schreiben',
+            'pfad' => 'boese.php',
+            'inhalt' => base64_encode('<?php'),
+        ], $schluessel);
+
+        is(405, $schreiben['status'], 'Schreiben weist sie ab');
+        ok(!is_file($platz['ordner'] . '/boese.php'), 'Und es landet nichts');
+
+        ok(!empfaenger_lauf($platz, ['aktion' => 'fertig'], $schluessel)['ok'],
+            'Sie loescht sich auch nicht selbst weg');
+        ok(is_file($platz['ordner'] . '/wa-dateien.php'), 'Sie liegt noch da');
+
+        // Dieselben Wachen wie beim Empfaenger.
+        $einmal = bin2hex(random_bytes(16));
+
+        foreach ([
+            'Ohne Unterschrift geht nichts' => [['aktion' => 'liste'], ['ohneUnterschrift' => true], 401],
+            'Ein fremder Schluessel oeffnet nichts' =>
+                [['aktion' => 'liste'], ['schluessel' => bin2hex(random_bytes(32))], 401],
+            'Eine alte Anfrage gilt nicht' => [['aktion' => 'hallo'], ['zeit' => time() - 600], 401],
+            'GET fuehrt zu nichts' => [['aktion' => 'hallo'], ['method' => 'GET'], 405],
+            'Holen ueber ".." fuehrt nicht hinaus' =>
+                [['aktion' => 'holen', 'pfad' => '../geheim.txt'], [], 400],
+            'Und mit absolutem Pfad auch nicht' =>
+                [['aktion' => 'holen', 'pfad' => '/etc/passwd'], [], 400],
+        ] as $was => [$rumpf, $abwandlung, $erwartet]) {
+            is($erwartet, empfaenger_lauf($platz, $rumpf, $schluessel, $abwandlung)['status'], $was);
+        }
+
+        ok(empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel, ['einmal' => $einmal])['ok'],
+            'Ein Einmalwert geht einmal durch');
+        is(409, empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel, ['einmal' => $einmal])['status'],
+            'Und kein zweites Mal');
+
+        // Symlink nach draussen.
+        $draussen = sys_get_temp_dir() . '/wa-draussen-' . bin2hex(random_bytes(4));
+        mkdir($draussen, 0777, true);
+        file_put_contents($draussen . '/geheim.txt', 'NICHT HERAUSGEBEN');
+        symlink($draussen . '/geheim.txt', $platz['ordner'] . '/tuer.txt');
+
+        $tuer = empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'tuer.txt'], $schluessel);
+
+        ok(!$tuer['ok'], 'Ein Symlink gibt nichts her');
+        ok(!in_array('tuer.txt', array_column(
+            (array) (empfaenger_lauf($platz, ['aktion' => 'liste'], $schluessel)['daten']['dateien'] ?? []),
+            'pfad'
+        ), true), 'Und wird auch nicht aufgelistet');
+
+        @unlink($draussen . '/geheim.txt');
+        @rmdir($draussen);
+    } finally {
+        empfaenger_ende($platz);
+    }
+
+    // Und ohne eingesetzten Schluessel tut sie gar nichts. Eine Datei,
+    // die jeden hereinliesse, weil beim Ausliefern etwas schiefging,
+    // waere schlimmer als keine.
+    $roh = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Kit/site/php/wa-dateien.php'
+    );
+
+    ok(str_contains($roh, '%%SCHLUESSEL%%'), 'Die Vorlage hat einen Platzhalter');
+    ok(str_contains($roh, "str_contains(SCHLUESSEL, '%%')"),
+        'Und ein nicht eingesetzter Platzhalter sperrt sie zu');
 });
 
 // ==================================================================

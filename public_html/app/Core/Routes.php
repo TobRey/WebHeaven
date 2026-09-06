@@ -294,6 +294,7 @@ final class Routes
             $r->get($base . '/projekt/{id}/empfaenger', 'DeployController@empfangsdatei');
             $r->post($base . '/projekt/{id}/empfaenger/probe', 'DeployController@empfangProbe');
             $r->post($base . '/projekt/{id}/empfaenger/weg', 'DeployController@empfangWeg');
+            $r->post($base . '/projekt/{id}/lesezugang/sperren', 'DeployController@leseZugangSperren');
             $r->post($base . '/projekt/{id}/archiv-bruecke', 'DeployController@uploadUeberBruecke');
             $r->post($base . '/projekt/{id}/stand-bruecke', 'DeployController@pullLiveBruecke');
             $r->post($base . '/projekt/{id}/domain', 'DomainController@save');

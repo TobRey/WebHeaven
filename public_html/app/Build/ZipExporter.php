@@ -326,6 +326,9 @@ final class ZipExporter
             // Nur der Weg ueber HTTPS kennt das: Ob der Empfaenger
             // danach noch dort liegt oder sich weggeraeumt hat.
             'aufgeraeumt' => (bool) ($ergebnis['aufgeraeumt'] ?? false),
+            // Und wie viele Geheimnisse die Leseschnittstelle
+            // zurueckbehalten hat.
+            'zurueckgehalten' => (int) ($ergebnis['zurueckgehalten'] ?? 0),
         ];
     }
 

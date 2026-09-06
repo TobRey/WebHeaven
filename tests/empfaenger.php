@@ -26,20 +26,21 @@ declare(strict_types=1);
  *
  * @return array{ordner:string, port:int, prozess:resource}|null
  */
-function empfaenger_platz(string $schluessel): ?array
+function empfaenger_platz(string $schluessel, string $welche = 'empfang'): ?array
 {
     $ordner = sys_get_temp_dir() . '/wa-empfang-' . bin2hex(random_bytes(6));
 
     mkdir($ordner, 0777, true);
 
-    $vorlage = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Kit/empfang/webatze-empfang.php'
-    );
+    // Beide Schnittstellen laufen durch dieselbe Probe: der Empfaenger,
+    // der kurz hier liegt, und die Leseschnittstelle, die liegen bleibt.
+    [$quelle, $name] = $welche === 'dauerhaft'
+        ? ['/public_html/app/Kit/site/php/wa-dateien.php', 'wa-dateien.php']
+        : ['/public_html/app/Kit/empfang/webatze-empfang.php', 'webatze-empfang.php'];
 
-    file_put_contents(
-        $ordner . '/webatze-empfang.php',
-        str_replace('%%SCHLUESSEL%%', $schluessel, $vorlage)
-    );
+    $vorlage = (string) file_get_contents(dirname(__DIR__) . $quelle);
+
+    file_put_contents($ordner . '/' . $name, str_replace('%%SCHLUESSEL%%', $schluessel, $vorlage));
 
     $port = empfaenger_freierPort();
 
@@ -63,7 +64,8 @@ function empfaenger_platz(string $schluessel): ?array
         if (is_resource($draht)) {
             fclose($draht);
 
-            return ['ordner' => $ordner, 'port' => $port, 'prozess' => $prozess, 'rohre' => $rohre];
+            return ['ordner' => $ordner, 'port' => $port, 'prozess' => $prozess,
+                'rohre' => $rohre, 'datei' => '/' . $name];
         }
 
         usleep(50000);
@@ -96,7 +98,7 @@ function empfaenger_lauf(array $platz, array $rumpf, string $schluessel, array $
     $text = (string) json_encode($rumpf, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
     $methode = (string) ($abwandlung['method'] ?? 'POST');
-    $uri = (string) ($abwandlung['pfad'] ?? '/webatze-empfang.php');
+    $uri = (string) ($abwandlung['pfad'] ?? ($platz['datei'] ?? '/webatze-empfang.php'));
     $zeit = (int) ($abwandlung['zeit'] ?? time());
     $einmal = (string) ($abwandlung['einmal'] ?? bin2hex(random_bytes(16)));
 

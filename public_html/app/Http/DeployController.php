@@ -244,11 +244,50 @@ final class DeployController
             return $this->back($project);
         }
 
-        $this->empfangMerken((int) $project['id'], $ergebnis['ok'], (string) $ergebnis['error']);
+        $this->empfangMerken(
+            (int) $project['id'],
+            $ergebnis['ok'],
+            (string) $ergebnis['error'],
+            (string) ($ergebnis['art'] ?? '')
+        );
 
-        Session::flash($ergebnis['ok'] ? 'success' : 'warning', $ergebnis['ok']
-            ? 'Der Empfänger liegt bereit. Das ZIP kann hinauf.'
-            : 'Der Empfänger meldet sich nicht: ' . $ergebnis['error']);
+        Session::flash($ergebnis['ok'] ? 'success' : 'warning', match (true) {
+            ($ergebnis['art'] ?? '') === 'dauerhaft' =>
+                'Die Leseschnittstelle liegt dort. Stand holen geht ohne weiteres Zutun.',
+            $ergebnis['ok'] =>
+                'Der Empfänger liegt bereit. Das ZIP kann hinauf.',
+            default =>
+                'Es meldet sich keine Schnittstelle: ' . $ergebnis['error'],
+        });
+
+        return $this->back($project);
+    }
+
+    /**
+     * Die dauerhafte Leseschnittstelle sperren.
+     *
+     * Nicht loeschen - dazu braeuchte es Schreibzugriff, und den hat sie
+     * bewusst nicht. Stattdessen bekommt sie einen neuen Schluessel: Die
+     * Datei auf der Website kennt ihn nicht und weist von da an jede
+     * Anfrage ab. Wer sie ganz weghaben will, loescht sie mit dem
+     * FTP-Programm - sie ist eine gewoehnliche Datei.
+     */
+    public function leseZugangSperren(Request $request): Response
+    {
+        $project = ProjectController::find($request->paramInt('id'));
+
+        if ($project === null) {
+            return Response::notFound();
+        }
+
+        \WebAtze\Build\Empfang::neuerLeseschluessel((int) $project['id']);
+        $this->empfangMerken((int) $project['id'], false, '', '');
+
+        Audit::log('empfang.lesezugang_gesperrt', (string) $project['name'], [], $request);
+
+        Session::flash('success',
+            'Die Leseschnittstelle ist gesperrt. Die Datei liegt noch dort, nimmt aber '
+            . 'nichts mehr an. Beim nächsten Hochladen kommt eine mit neuem Schlüssel mit.');
 
         return $this->back($project);
     }
@@ -338,11 +377,12 @@ final class DeployController
         return $this->back($project);
     }
 
-    /** Was zuletzt über den Empfänger gemessen wurde, für die Ansicht. */
-    private function empfangMerken(int $projectId, bool $ok, string $grund): void
+    /** Was zuletzt über die Schnittstelle gemessen wurde, für die Ansicht. */
+    private function empfangMerken(int $projectId, bool $ok, string $grund, string $art = ''): void
     {
         Session::put('empfang_' . $projectId, [
             'ok' => $ok,
+            'art' => $art,
             'error' => $grund,
             'zeit' => date('d.m.Y H:i'),
         ]);
@@ -597,6 +637,9 @@ final class DeployController
             // Nur der Weg ueber HTTPS kennt das - beim FTP-Weg liegt
             // nichts herum, das man liegen lassen koennte.
             'liegenlassen' => $request->bool('liegenlassen'),
+            // Es ist die Website des Kunden: Wer die dauerhafte
+            // Leseschnittstelle nicht will, hakt sie ab.
+            'lesezugang' => $request->bool('lesezugang'),
         ], (int) $project['id']);
         Jobs::nudge();
 

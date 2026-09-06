@@ -987,7 +987,13 @@ final class Pipeline
             ($ergebnis['aufgeraeumt'] ?? false)
                 ? ' Die Empfangsdatei ist wieder weg.'
                 : ''
-        ));
+        ) . (((int) ($ergebnis['zurueckgehalten'] ?? 0)) > 0
+            ? sprintf(
+                ' %d Datei(en) mit Zugangsdaten sind bewusst nicht dabei - '
+                . 'als Sicherung taugt das Archiv damit nicht.',
+                (int) $ergebnis['zurueckgehalten']
+            )
+            : ''));
     }
 
     /**
@@ -1037,7 +1043,9 @@ final class Pipeline
                 );
             },
             $budget - 5.0,
-            !(bool) ($job['payload']['liegenlassen'] ?? false)
+            !(bool) ($job['payload']['liegenlassen'] ?? false),
+            // Vorgabe ja: Danach geht "Stand holen" ohne Handgriffe.
+            ($job['payload']['lesezugang'] ?? true) !== false
         );
 
         @unlink($zip);
@@ -1050,9 +1058,12 @@ final class Pipeline
 
         Jobs::progress($job['id'], 'fertig', 100, 'Hochgeladen.');
         Jobs::finish($job['id'], sprintf(
-            '%d Dateien über HTTPS hochgeladen%s.',
+            '%d Dateien über HTTPS hochgeladen%s%s.',
             $ergebnis['files'],
-            ($ergebnis['aufgeraeumt'] ?? false) ? ' - die Empfangsdatei ist wieder weg' : ''
+            ($ergebnis['lesezugang'] ?? false)
+                ? ' - die Leseschnittstelle liegt jetzt dort'
+                : '',
+            ($ergebnis['aufgeraeumt'] ?? false) ? ', die Empfangsdatei ist wieder weg' : ''
         ));
 
         Db::update('projects', [

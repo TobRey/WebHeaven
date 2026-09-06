@@ -354,6 +354,36 @@ Zeitfenster, derselbe Einmalwert - und darueber hinaus:
 * **Eigener Schluessel je Website.** Nicht der der Bruecke: Wer den
   Empfaenger von einer Website liest, haette sonst alle offen.
 
+### Die Leseschnittstelle: Dateien holen ohne jeden Handgriff
+
+Der Empfaenger loest das Hochladen, aber er verschwindet danach - fuer
+das *Holen* muesste man ihn jedes Mal neu hinlegen. Deshalb faehrt beim
+Hochladen eine zweite Datei mit, `wa-dateien.php`, und die bleibt
+liegen. Ab dann holt *Aktuellen Stand holen* die Website ueber HTTPS,
+ohne FTP und ohne Handgriff. Eine hier gebaute Website bringt sie von
+Anfang an mit.
+
+Der Unterschied zum Empfaenger ist nicht die Technik, sondern was sie
+darf: **Sie liest, und sie schreibt nicht.** Eine dauerhaft erreichbare
+*Schreib*stelle auf einer Kundenwebsite ist kein Zustand, den man
+hinterlaesst - eine Lesestelle ist etwas anderes. Sie gibt im
+schlimmsten Fall das heraus, was die Website ohnehin ausliefert.
+
+Damit das auch stimmt:
+
+* **Geheimnisse bleiben drin.** `config.php`, `.env`, `.htpasswd` und
+  die Schnittstellendateien selbst werden nie herausgegeben und nie
+  aufgelistet - in `data/config.php` steht der Schluessel der Bruecke.
+* **Und das Fehlen wird gezaehlt.** Was zurueckgehalten wurde, steht in
+  der Abschlussmeldung. Ein Archiv, dem stillschweigend etwas fehlt,
+  wird irgendwann fuer eine Sicherung gehalten.
+* **Eigener Schluessel**, weder der der Bruecke noch der des
+  Empfaengers. Zwei Lebensdauern, zwei Schluessel.
+* **Sperren geht ohne FTP.** Ein Knopf auf der Veroeffentlichen-Seite
+  tauscht den Schluessel; die Datei liegt dann noch dort, nimmt aber
+  nichts mehr an. Wer sie ganz weghaben will, loescht sie - es ist eine
+  gewoehnliche Datei.
+
 FTP und SFTP bleiben daneben stehen, fuer die Server, bei denen sie
 durchkommen.
 
@@ -491,7 +521,7 @@ php -S 127.0.0.1:8080 -t public_html public_html/index.php
 
 | Befehl | Wofür |
 |---|---|
-| `php tests/run.php` | der Testlauf (2343 Prüfungen) |
+| `php tests/run.php` | der Testlauf (2379 Prüfungen) |
 | `php tests/run.php --seiten-festhalten` | den Aufbau der eigenen Seiten neu festhalten |
 | `php tools/eigene-website-uebernehmen.php` | zeigt, was aus der eigenen Website als Daten entstünde |
 | `php tools/probelauf/durchlauf.php` | eine ganze Website bauen, vom Formular bis zum Paket |

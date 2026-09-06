@@ -46,6 +46,22 @@ const MAX_TIEFE = 12;
 const MERKER = '.webatze-einmal';
 
 /**
+ * Was nie herausgegeben und nie aufgelistet wird.
+ *
+ * Beim Schreiben gilt die Liste nicht - eine Website bringt ihre eigene
+ * config.php mit, und die dauerhafte Leseschnittstelle wird hier gerade
+ * erst hingelegt. Beim Lesen gilt sie: Das Werkzeug gehört nicht ins
+ * Werkstück, und in beiden Schnittstellendateien steht ein Schlüssel.
+ */
+const VERSCHWIEGEN = ['config.php', '.env', '.htpasswd', MERKER, 'wa-dateien.php', '.webatze-gelesen'];
+
+/** Gehört dieser Name zu den Geheimnissen? */
+function verschwiegen(string $name): bool
+{
+    return in_array(strtolower($name), array_map('strtolower', VERSCHWIEGEN), true);
+}
+
+/**
  * Antwort und Schluss.
  *
  * @param array<string, mixed> $mehr
@@ -102,6 +118,10 @@ function zielPfad(string $ziel, bool $zumLesen): string
     }
 
     if ($zumLesen) {
+        if (verschwiegen(basename($ziel))) {
+            raus(false, 'Diese Datei wird nicht herausgegeben.', 403);
+        }
+
         // Gegenprobe am echten Pfad: Ein Symlink verrät sich im Text
         // nicht, im aufgelösten Pfad schon.
         $echt = realpath($voll);
@@ -167,9 +187,10 @@ function sammeln(string $ordner, string $vorsatz, int $tiefe, array &$treffer): 
             continue;
         }
 
-        // Sich selbst und den eigenen Merker nicht: Beide gehören zu
-        // dieser Übertragung und nicht zur Website.
-        if ($voll === __FILE__ || $name === MERKER) {
+        // Sich selbst, den eigenen Merker und die Geheimnisse nicht:
+        // Das eine gehört zur Übertragung und nicht zur Website, das
+        // andere in kein Archiv.
+        if ($voll === __FILE__ || verschwiegen($name)) {
             continue;
         }
 

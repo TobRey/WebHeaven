@@ -76,6 +76,8 @@ $adresse = trim((string) ($project['domain'] ?? ''));
 $stand = (array) ($empfang ?? []);
 $gemessen = array_key_exists('ok', $stand);
 $liegt = $gemessen && (bool) $stand['ok'];
+$art = (string) ($stand['art'] ?? '');
+$dauerhaft = $liegt && $art === 'dauerhaft';
 $offen = $adresse !== '';
 ?>
 <section class="wa-panel wa-transfer">
@@ -83,30 +85,36 @@ $offen = $adresse !== '';
         <h2 class="wa-panel__title">Website hochladen und holen</h2>
         <p class="wa-panel__hint">
             Über HTTPS auf Port 443 &ndash; der Ausgang, der auf jedem Hosting offen ist.
-            Dafür liegt einmal eine kleine Empfangsdatei im Verzeichnis der Website.
-            Sie schreibt und liest nur dort, wo sie selbst liegt.
+            <strong>Holen</strong> geht dauerhaft: Beim ersten Hochladen bleibt eine
+            Leseschnittstelle auf der Website liegen, danach braucht es dafür keinen
+            Handgriff mehr. <strong>Hochladen</strong> braucht jedes Mal kurz die
+            Empfangsdatei &ndash; eine Schreibstelle lässt man nicht dauerhaft offen.
         </p>
     </div>
 
     <div class="wa-note">
         <div>
-            <strong>Empfänger:</strong>
+            <strong>Schnittstelle:</strong>
             <?php if (!$offen): ?>
                 <span class="wa-badge wa-badge--warn">keine Adresse</span>
                 Diese Website hat keine Adresse hinterlegt &ndash; ohne sie weiss der Weg nicht,
                 wen er anrufen soll.
                 <a href="<?= e($base) ?>/websites/<?= $id ?>">Adresse eintragen</a>
+            <?php elseif ($dauerhaft): ?>
+                <span class="wa-badge wa-badge--ok">Leseschnittstelle liegt dort</span>
+                Stand holen geht ohne weiteres Zutun. Nachgesehen am
+                <?= e((string) ($stand['zeit'] ?? '')) ?> auf <code><?= e($adresse) ?></code>
             <?php elseif ($liegt): ?>
-                <span class="wa-badge wa-badge--ok">liegt bereit</span>
+                <span class="wa-badge wa-badge--ok">Empfänger liegt bereit</span>
                 nachgesehen am <?= e((string) ($stand['zeit'] ?? '')) ?> auf
                 <code><?= e($adresse) ?></code>
             <?php elseif ($gemessen): ?>
-                <span class="wa-badge wa-badge--bad">nicht da</span>
+                <span class="wa-badge wa-badge--bad">nichts da</span>
                 <?= e((string) ($stand['error'] ?? '')) ?>
                 (nachgesehen am <?= e((string) ($stand['zeit'] ?? '')) ?>)
             <?php else: ?>
                 <span class="wa-badge">noch nicht nachgesehen</span>
-                Ob die Datei schon dort liegt, weiss nur ein Anruf.
+                Ob dort etwas liegt, weiss nur ein Anruf.
             <?php endif; ?>
         </div>
     </div>
@@ -115,12 +123,18 @@ $offen = $adresse !== '';
         <div class="wa-form__actions">
             <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/empfaenger/probe">
                 <?= Csrf::field() ?>
-                <button type="submit" class="wa-btn">Nachsehen, ob der Empfänger liegt</button>
+                <button type="submit" class="wa-btn">Nachsehen, was dort liegt</button>
             </form>
-            <?php /* Nur wenn er liegt: Ein Knopf, der etwas entfernt, das
-                     nicht da ist, verspricht eine Wirkung, die er nicht
-                     hat. */ ?>
-            <?php if ($liegt): ?>
+            <?php /* Jeweils nur, was es zu entfernen gibt. Ein Knopf, der
+                     etwas wegräumt, das nicht da ist, verspricht eine
+                     Wirkung, die er nicht hat. */ ?>
+            <?php if ($dauerhaft): ?>
+                <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/lesezugang/sperren"
+                      data-confirm="Die Leseschnittstelle sperren? Stand holen geht danach nicht mehr ohne FTP.">
+                    <?= Csrf::field() ?>
+                    <button type="submit" class="wa-btn">Leseschnittstelle sperren</button>
+                </form>
+            <?php elseif ($liegt): ?>
                 <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/empfaenger/weg"
                       data-confirm="Den Empfänger jetzt von der Website entfernen?">
                     <?= Csrf::field() ?>
@@ -145,12 +159,19 @@ $offen = $adresse !== '';
                     Website legen und dabei in <code>webatze-empfang.php</code>
                     umbenennen (das <code>.txt</code> weg).
                 </li>
-                <li>Hier hochladen oder holen &ndash; es geht dann über HTTPS.</li>
+                <li>Hier hochladen &ndash; es geht dann über HTTPS.</li>
             </ol>
             <p class="wa-label__hint">
-                Die Datei trägt einen eigenen Schlüssel, nimmt nur unterschriebene
+                Die Empfangsdatei trägt einen eigenen Schlüssel, nimmt nur unterschriebene
                 Anfragen an und <strong>löscht sich nach der Übertragung selbst</strong>
                 &ndash; spätestens aber nach 24 Stunden.
+            </p>
+            <p class="wa-label__hint">
+                Beim Hochladen bleibt <code>wa-dateien.php</code> auf der Website liegen.
+                Sie <strong>liest nur</strong>, gibt Geheimnisse wie
+                <code>config.php</code> nie heraus und lässt sich hier oben jederzeit
+                sperren. Ab dann geht &bdquo;Aktuellen Stand holen&ldquo; ohne jeden
+                weiteren Handgriff &ndash; auch dann, wenn FTP nie durchkommt.
             </p>
         </div>
     </details>
@@ -174,6 +195,13 @@ $offen = $adresse !== '';
                 <label class="wa-checkbox">
                     <input type="checkbox" name="liegenlassen" value="1"<?= $offen ? '' : ' disabled' ?>>
                     <span>Empfänger danach liegen lassen</span>
+                </label>
+
+                <?php /* Vorgehakt, weil es der Sinn der Sache ist - aber es
+                         ist die Website des Kunden, also abwählbar. */ ?>
+                <label class="wa-checkbox">
+                    <input type="checkbox" name="lesezugang" value="1" checked<?= $offen ? '' : ' disabled' ?>>
+                    <span>Leseschnittstelle mitliefern (für „Stand holen“ ohne FTP)</span>
                 </label>
 
                 <div class="wa-form__actions">

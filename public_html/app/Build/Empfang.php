@@ -40,8 +40,20 @@ use WebAtze\Domain\Bridge;
  */
 final class Empfang
 {
-    /** Wie die Datei auf der Kundenwebsite heisst. */
+    /** Wie die Datei auf der Kundenwebsite heisst, die kurz hier liegt. */
     public const DATEI = 'webatze-empfang.php';
+
+    /**
+     * Und wie die, die liegen bleibt.
+     *
+     * Der Unterschied ist nicht die Technik, sondern was sie darf: Diese
+     * hier liest nur. Eine dauerhaft erreichbare *Schreib*stelle auf
+     * einer Kundenwebsite ist kein Zustand, den man hinterlaesst - eine
+     * Lesestelle ist etwas anderes. Sie gibt im schlimmsten Fall das
+     * heraus, was die Website ohnehin ausliefert, und die Geheimnisse
+     * (config.php und ihresgleichen) haelt sie zurueck.
+     */
+    public const DAUERDATEI = 'wa-dateien.php';
 
     /** Wie lange auf eine Antwort gewartet wird. */
     private const TIMEOUT = 30;
@@ -90,6 +102,54 @@ final class Empfang
     }
 
     /**
+     * Der Schlüssel der dauerhaften Leseschnittstelle.
+     *
+     * Ein eigener, nicht der des Empfängers: Der wird von Hand
+     * hingelegt und löscht sich wieder, diese bleibt liegen. Zwei
+     * Lebensdauern, zwei Schlüssel - sonst widerruft das Entfernen des
+     * einen den anderen nicht.
+     */
+    public static function leseschluessel(int $projectId): string
+    {
+        $vorhanden = (string) Db::value(
+            'SELECT dateien_secret FROM projects WHERE id = :id',
+            ['id' => $projectId]
+        );
+
+        if ($vorhanden !== '') {
+            return $vorhanden;
+        }
+
+        $neu = bin2hex(random_bytes(32));
+
+        Db::update('projects', ['dateien_secret' => $neu, 'updated_at' => Db::now()],
+            'id = :id', ['id' => $projectId]);
+
+        return $neu;
+    }
+
+    /** Einen neuen Leseschlüssel setzen - die liegende Datei gilt dann nicht mehr. */
+    public static function neuerLeseschluessel(int $projectId): string
+    {
+        Db::update('projects', ['dateien_secret' => '', 'updated_at' => Db::now()],
+            'id = :id', ['id' => $projectId]);
+
+        return self::leseschluessel($projectId);
+    }
+
+    /** Die Leseschnittstelle, fertig zum Mitliefern. */
+    public static function dauerdatei(int $projectId): string
+    {
+        $vorlage = (string) @file_get_contents(APP_DIR . '/Kit/site/php/' . self::DAUERDATEI);
+
+        if ($vorlage === '') {
+            return '';
+        }
+
+        return str_replace('%%SCHLUESSEL%%', self::leseschluessel($projectId), $vorlage);
+    }
+
+    /**
      * Die Empfangsdatei, fertig zum Hinlegen.
      *
      * Der Schlüssel wird in die Vorlage gesetzt - sonst ist die Datei
@@ -115,6 +175,9 @@ final class Empfang
      * vorher hier, mit denselben Regeln wie beim FTP-Weg; der Empfänger
      * prüft jeden Pfad noch einmal.
      *
+     * Am Ende faehrt die dauerhafte Leseschnittstelle mit - ab dann
+     * geht "Stand holen" ohne jeden Handgriff.
+     *
      * @param callable|null $onProgress fn(int $fertig, int $gesamt, string $datei)
      * @return array{ok:bool, files:int, error:string, retryable:bool}
      */
@@ -123,7 +186,8 @@ final class Empfang
         string $zipPfad,
         ?callable $onProgress = null,
         float $budget = 120.0,
-        bool $aufraeumen = true
+        bool $aufraeumen = true,
+        bool $leseZugang = true
     ): array {
         $adresse = self::adresse($projekt);
 
@@ -196,11 +260,31 @@ final class Empfang
             $zip->close();
         }
 
+        // Die Leseschnittstelle faehrt mit.
+        //
+        // Das ist der Punkt, an dem der Weg ohne FTP von einer einmaligen
+        // Rettung zu einer dauerhaften Leitung wird: Nach diesem Upload
+        // liegt sie auf der Website, und "Stand holen" braucht danach
+        // keine Handgriffe mehr - kein Hinlegen, kein FTP-Programm,
+        // nichts. Sie liest nur; geschrieben wird weiterhin nur, solange
+        // der Empfaenger daneben liegt.
+        $lesen = false;
+
+        if ($leseZugang) {
+            $inhalt = self::dauerdatei((int) $projekt['id']);
+
+            $lesen = $inhalt !== '' && self::anfrage($adresse, $schluessel, 'schreiben', [
+                'pfad' => self::DAUERDATEI,
+                'inhalt' => base64_encode($inhalt),
+            ])['ok'];
+        }
+
         return [
             'ok' => true,
             'files' => $fertig,
             'error' => '',
             'retryable' => false,
+            'lesezugang' => $lesen,
             'aufgeraeumt' => self::vielleichtAufraeumen($adresse, $schluessel, $aufraeumen),
         ];
     }
@@ -228,14 +312,20 @@ final class Empfang
         ?callable $onProgress = null,
         bool $aufraeumen = true
     ): array {
-        $adresse = self::adresse($projekt);
+        $weg = self::wegFinden($projekt);
 
-        if ($adresse === '') {
-            return self::baumFehler('Diese Website hat keine Adresse - ohne die geht es nicht.');
+        if (!$weg['ok']) {
+            return self::baumFehler('Keine Schnittstelle auf der Website erreichbar: ' . $weg['error']);
         }
 
-        $schluessel = self::schluessel((int) $projekt['id']);
+        $adresse = $weg['adresse'];
+        $schluessel = $weg['schluessel'];
         $ende = microtime(true) + $budget;
+
+        // Die dauerhafte Schnittstelle raeumt sich nicht weg - sie ist
+        // kein Besuch, sie gehoert zur Website. Nur der Empfaenger, der
+        // von Hand hingelegt wurde, verschwindet danach wieder.
+        $aufraeumen = $aufraeumen && $weg['art'] === 'empfang';
 
         $verzeichnis = self::anfrage($adresse, $schluessel, 'liste', []);
 
@@ -245,6 +335,11 @@ final class Empfang
 
         $dateien = (array) ($verzeichnis['daten']['dateien'] ?? []);
         $abgeschnitten = (bool) ($verzeichnis['daten']['abgeschnitten'] ?? false);
+        // Die Leseschnittstelle gibt config.php und ihresgleichen nicht
+        // heraus. Das ist richtig so - aber es gehoert in die Meldung,
+        // sonst haelt jemand ein unvollstaendiges Archiv fuer eine
+        // vollstaendige Sicherung.
+        $zurueckgehalten = (int) ($verzeichnis['daten']['zurueckgehalten'] ?? 0);
         $anzahl = 0;
         $bytes = 0;
 
@@ -309,30 +404,23 @@ final class Empfang
             'bytes' => $bytes,
             'error' => $anzahl > 0 ? '' : 'Es kam keine einzige Datei an. Liegt der Empfänger im richtigen Ordner?',
             'abgeschnitten' => $abgeschnitten,
+            'zurueckgehalten' => $zurueckgehalten,
             // Nichts zwischengespeichert: Der Weg über HTTPS reicht die
             // Inhalte direkt ins Archiv weiter.
             'tmp' => [],
         ];
     }
 
-    /** Steht der Empfänger schon bereit? */
+    /**
+     * Steht eine Schnittstelle bereit - und welche?
+     *
+     * @return array{ok:bool, art:string, error:string}
+     */
     public static function erreichbar(array $projekt): array
     {
-        $adresse = self::adresse($projekt);
+        $weg = self::wegFinden($projekt);
 
-        if ($adresse === '') {
-            return ['ok' => false, 'error' => 'Diese Website hat keine Adresse.'];
-        }
-
-        $antwort = self::anfrage(
-            $adresse,
-            self::schluessel((int) $projekt['id']),
-            'hallo',
-            [],
-            self::TIMEOUT_PROBE
-        );
-
-        return ['ok' => $antwort['ok'], 'error' => $antwort['error']];
+        return ['ok' => $weg['ok'], 'art' => $weg['art'], 'error' => $weg['error']];
     }
 
     /**
@@ -464,7 +552,7 @@ final class Empfang
     }
 
     /** Wohin die Anfragen gehen. */
-    private static function adresse(array $projekt): string
+    private static function adresse(array $projekt, string $datei = self::DATEI): string
     {
         $domain = trim((string) ($projekt['domain'] ?? ''));
 
@@ -476,7 +564,63 @@ final class Empfang
             $domain = 'https://' . $domain;
         }
 
-        return rtrim($domain, '/') . '/' . self::DATEI;
+        return rtrim($domain, '/') . '/' . $datei;
+    }
+
+    /**
+     * Welcher Weg steht offen?
+     *
+     * Zuerst die dauerhafte Leseschnittstelle - liegt sie, ist nichts
+     * weiter zu tun, und genau dafuer ist sie da. Erst wenn sie sich
+     * nicht meldet, wird der Empfaenger gefragt, der von Hand
+     * hingelegt wird.
+     *
+     * Gefragt wird mit kurzer Zeitgrenze: Zwei Proben nacheinander
+     * duerfen zusammen nicht laenger dauern als vorher eine.
+     *
+     * @return array{ok:bool, adresse:string, schluessel:string, art:string, error:string}
+     */
+    public static function wegFinden(array $projekt): array
+    {
+        $id = (int) $projekt['id'];
+
+        if (self::adresse($projekt) === '') {
+            return self::keinWeg('Diese Website hat keine Adresse.');
+        }
+
+        $wege = [
+            ['art' => 'dauerhaft', 'datei' => self::DAUERDATEI, 'schluessel' => self::leseschluessel($id)],
+            ['art' => 'empfang', 'datei' => self::DATEI, 'schluessel' => self::schluessel($id)],
+        ];
+
+        $ersterGrund = '';
+
+        foreach ($wege as $weg) {
+            $adresse = self::adresse($projekt, $weg['datei']);
+            $antwort = self::anfrage($adresse, $weg['schluessel'], 'hallo', [], self::TIMEOUT_PROBE);
+
+            if ($antwort['ok']) {
+                return [
+                    'ok' => true,
+                    'adresse' => $adresse,
+                    'schluessel' => $weg['schluessel'],
+                    'art' => $weg['art'],
+                    'error' => '',
+                ];
+            }
+
+            if ($ersterGrund === '') {
+                $ersterGrund = $antwort['error'];
+            }
+        }
+
+        return self::keinWeg($ersterGrund !== '' ? $ersterGrund : 'Keine Schnittstelle antwortet.');
+    }
+
+    /** @return array{ok:bool, adresse:string, schluessel:string, art:string, error:string} */
+    private static function keinWeg(string $grund): array
+    {
+        return ['ok' => false, 'adresse' => '', 'schluessel' => '', 'art' => '', 'error' => $grund];
     }
 
     /** @return array{ok:bool, files:int, error:string, retryable:bool} */
