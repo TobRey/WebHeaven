@@ -44,6 +44,11 @@ final class DeployController
                 'brief' => json_decode((string) $project['brief'], true) ?: [],
                 // Was der letzte Verbindungstest dort gefunden hat.
                 'gefunden' => (array) Session::get('ftp_ordner_' . (int) $project['id'], []),
+                // Und was die letzte Probe ueber den Empfaenger sagt.
+                // Bewusst aus der Sitzung und nicht frisch gemessen:
+                // Eine Anfrage ueber die Leitung darf keinen
+                // Seitenaufbau aufhalten.
+                'empfang' => (array) Session::get('empfang_' . (int) $project['id'], []),
                 // Der gemeinsame Zugang: Alle Websites liegen auf
                 // demselben Konto, also gehoert er hier zur Auswahl.
                 'hostingAccounts' => \WebAtze\Domain\HostingAccount::all(),
@@ -213,10 +218,134 @@ final class DeployController
             ->noIndex();
     }
 
+    /**
+     * Nachsehen, ob der Empfänger schon dort liegt.
+     *
+     * Auf Knopfdruck und nicht beim Seitenaufbau: Es ist eine Anfrage
+     * über die Leitung, und die kann dauern. Das Ergebnis bleibt in der
+     * Sitzung stehen, genau wie das des Verbindungstests - dann sagt
+     * die Seite auch beim nächsten Aufruf noch, was zuletzt gemessen
+     * wurde, und wann.
+     */
+    public function empfangProbe(Request $request): Response
+    {
+        $project = ProjectController::find($request->paramInt('id'));
+
+        if ($project === null) {
+            return Response::notFound();
+        }
+
+        try {
+            $ergebnis = \WebAtze\Build\Empfang::erreichbar($project);
+        } catch (\Throwable $e) {
+            Logger::exception($e);
+            Session::flash('error', 'Die Probe ist abgestürzt. Bitte melde dich.');
+
+            return $this->back($project);
+        }
+
+        $this->empfangMerken((int) $project['id'], $ergebnis['ok'], (string) $ergebnis['error']);
+
+        Session::flash($ergebnis['ok'] ? 'success' : 'warning', $ergebnis['ok']
+            ? 'Der Empfänger liegt bereit. Das ZIP kann hinauf.'
+            : 'Der Empfänger meldet sich nicht: ' . $ergebnis['error']);
+
+        return $this->back($project);
+    }
+
+    /**
+     * Den Empfänger jetzt entfernen.
+     *
+     * Das Gegenstück zum Häkchen "liegen lassen". Ohne diesen Knopf
+     * wäre das Liegenlassen eine Einbahnstrasse bis zum Ablauf nach 24
+     * Stunden - und eine Schreibstelle, die man nicht mehr zumachen
+     * kann, lässt man besser gar nicht erst offen.
+     */
+    public function empfangWeg(Request $request): Response
+    {
+        $project = ProjectController::find($request->paramInt('id'));
+
+        if ($project === null) {
+            return Response::notFound();
+        }
+
+        try {
+            $ergebnis = \WebAtze\Build\Empfang::weg($project);
+        } catch (\Throwable $e) {
+            Logger::exception($e);
+            Session::flash('error', 'Das Entfernen ist abgestürzt. Bitte melde dich.');
+
+            return $this->back($project);
+        }
+
+        // Nach dem Entfernen liegt er nicht mehr - und wenn er sich
+        // nicht meldet, liegt er auch nicht mehr. Beides ist "weg".
+        $this->empfangMerken((int) $project['id'], false, '');
+
+        Audit::log('empfang.entfernt', (string) $project['name'], [
+            'geklappt' => $ergebnis['ok'],
+        ], $request);
+
+        Session::flash($ergebnis['ok'] ? 'success' : 'warning', $ergebnis['ok']
+            ? 'Der Empfänger ist entfernt.'
+            : 'Er hat sich nicht gemeldet: ' . $ergebnis['error']
+              . ' Falls er noch liegt, verschwindet er spätestens nach 24 Stunden von selbst.');
+
+        return $this->back($project);
+    }
+
     /** Ein hochgeladenes Archiv über HTTPS schicken statt über FTP. */
     public function uploadUeberBruecke(Request $request): Response
     {
         return $this->archivAnnehmen($request, 'zip-per-bruecke');
+    }
+
+    /**
+     * Den aktuellen Stand über HTTPS holen statt über FTP.
+     *
+     * Derselbe Live-Stand wie beim FTP-Weg, dieselbe Zeile in der
+     * Paketliste - nur eine andere Leitung. Ohne das wäre "FTP
+     * vergessen" ein halber Weg: hinauf ja, herunter nicht.
+     */
+    public function pullLiveBruecke(Request $request): Response
+    {
+        $project = ProjectController::find($request->paramInt('id'));
+
+        if ($project === null) {
+            return Response::notFound();
+        }
+
+        if (Jobs::activeFor((int) $project['id']) !== null) {
+            Session::flash('warning', 'Für dieses Projekt läuft bereits ein Auftrag.');
+
+            return $this->back($project);
+        }
+
+        if (trim((string) ($project['domain'] ?? '')) === '') {
+            Session::flash('error', 'Ohne Adresse der Website weiss ich nicht, wen ich anrufen soll.');
+
+            return $this->back($project);
+        }
+
+        Jobs::enqueue('stand-per-bruecke', [
+            'liegenlassen' => $request->bool('liegenlassen'),
+        ], (int) $project['id']);
+        Jobs::nudge();
+
+        Audit::log('project.pull.started', (string) $project['name'], ['weg' => 'https'], $request);
+        Session::flash('success', 'Der Stand wird über HTTPS geholt. Das dauert je nach Grösse eine Weile.');
+
+        return $this->back($project);
+    }
+
+    /** Was zuletzt über den Empfänger gemessen wurde, für die Ansicht. */
+    private function empfangMerken(int $projectId, bool $ok, string $grund): void
+    {
+        Session::put('empfang_' . $projectId, [
+            'ok' => $ok,
+            'error' => $grund,
+            'zeit' => date('d.m.Y H:i'),
+        ]);
     }
 
     /** Verbindung prüfen, ohne etwas hochzuladen. */
@@ -463,7 +592,12 @@ final class DeployController
             return $this->back($project);
         }
 
-        Jobs::enqueue($typ, ['zip' => $pfad], (int) $project['id']);
+        Jobs::enqueue($typ, [
+            'zip' => $pfad,
+            // Nur der Weg ueber HTTPS kennt das - beim FTP-Weg liegt
+            // nichts herum, das man liegen lassen koennte.
+            'liegenlassen' => $request->bool('liegenlassen'),
+        ], (int) $project['id']);
         Jobs::nudge();
 
         Audit::log('deploy.zip.started', (string) $project['name'], [

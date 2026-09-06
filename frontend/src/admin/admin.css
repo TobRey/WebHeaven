@@ -675,7 +675,7 @@
   align-items: center;
   gap: var(--wa-space-2);
   padding: var(--wa-space-3) var(--wa-space-4);
-  color: var(--wa-secondary);
+  color: var(--wa-secondary-ink);
   cursor: pointer;
   font-weight: var(--wa-weight-medium);
   list-style: none;
@@ -703,7 +703,7 @@
   background: var(--wa-surface-glass);
   font-family: var(--wa-font-mono);
   font-size: 0.85em;
-  color: var(--wa-secondary);
+  color: var(--wa-secondary-ink);
 }
 
 /* ================================================================== */

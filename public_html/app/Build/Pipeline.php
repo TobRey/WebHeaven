@@ -57,6 +57,7 @@ final class Pipeline
             'live' => self::pullLive($job, $budget),
             'zip-hochladen' => self::deployZip($job, $budget),
             'zip-per-bruecke' => self::deployBruecke($job, $budget),
+            'stand-per-bruecke' => self::pullLive($job, $budget, 'https'),
             default => throw new RuntimeException('Unbekannte Auftragsart: ' . $type),
         };
     }
@@ -935,7 +936,7 @@ final class Pipeline
      * max_execution_time auf geteiltem Hosting - und der Browser haette
      * laengst abgebrochen, waehrend der Download weiterlaeuft.
      */
-    private static function pullLive(array $job, float $budget): void
+    private static function pullLive(array $job, float $budget, string $weg = 'ftp'): void
     {
         $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
 
@@ -945,7 +946,9 @@ final class Pipeline
             return;
         }
 
-        Jobs::progress($job['id'], 'holen', 10, 'Verbindung wird aufgebaut …');
+        Jobs::progress($job['id'], 'holen', 10, $weg === 'https'
+            ? 'Die Website wird angerufen …'
+            : 'Verbindung wird aufgebaut …');
 
         try {
             $ergebnis = ZipExporter::pullLive(
@@ -962,7 +965,9 @@ final class Pipeline
                         sprintf('%d Dateien geholt … (%s)', $dateien, $pfad)
                     );
                 },
-                $budget - 10.0
+                $budget - 10.0,
+                $weg,
+                (bool) ($job['payload']['liegenlassen'] ?? false)
             );
         } catch (\Throwable $e) {
             Jobs::fail($job['id'], $e->getMessage(), false);
@@ -973,11 +978,14 @@ final class Pipeline
         Jobs::progress($job['id'], 'fertig', 100, 'Stand geholt.', ['live' => $ergebnis]);
 
         Jobs::finish($job['id'], sprintf(
-            '%d Dateien geholt (%s).%s',
+            '%d Dateien geholt (%s).%s%s',
             $ergebnis['files'],
             format_bytes((int) $ergebnis['bytes']),
             $ergebnis['abgeschnitten']
                 ? ' Achtung: unvollständig, eine Grenze war erreicht.'
+                : '',
+            ($ergebnis['aufgeraeumt'] ?? false)
+                ? ' Die Empfangsdatei ist wieder weg.'
                 : ''
         ));
     }
@@ -1028,7 +1036,8 @@ final class Pipeline
                     sprintf('%d von %d Dateien (%s)', $fertig, $gesamt, $datei)
                 );
             },
-            $budget - 5.0
+            $budget - 5.0,
+            !(bool) ($job['payload']['liegenlassen'] ?? false)
         );
 
         @unlink($zip);

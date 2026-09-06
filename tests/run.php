@@ -22,6 +22,7 @@ $_SERVER['WEBATZE_TEST'] = '1';
 
 require __DIR__ . '/harness.php';
 require __DIR__ . '/seiten.php';
+require __DIR__ . '/empfaenger.php';
 require __DIR__ . '/../public_html/app/bootstrap.php';
 
 // Der Testlauf bekommt eine eigene, leere Datenbank.
@@ -3327,11 +3328,14 @@ test('Die beiden Knoepfe stehen da, auch ohne Zugangsdaten', function (): void {
     ok(str_contains($ohne, 'href="#zugang"'), 'Und der Weg dorthin steht daneben');
     ok(str_contains($mit, 'id="zugang"'), 'Das Ziel des Verweises gibt es auch');
 
-    // Mit Zugang keine stumpfen Knoepfe in dieser Tafel. Geschnitten
-    // wird an der Ueberschrift der naechsten, nicht am Wort "Paket" -
-    // das steht auch im Hinweistext darueber, und der Schnitt laege
-    // dann vor den Knoepfen, um die es geht.
-    $tafel = substr($mit, 0, (int) strpos($mit, '<h2 class="wa-panel__title">Paket<'));
+    // Mit Zugang keine stumpfen Knoepfe in der FTP-Tafel. Geschnitten
+    // wird zwischen deren Ueberschrift und der naechsten: Darueber
+    // liegt seit dem Umbau der Weg ueber HTTPS, und der ist ohne
+    // hinterlegte Adresse zu Recht stumpf. Frueher lief der Schnitt
+    // vom Seitenanfang an - und haette die fremde Tafel mitgemessen.
+    $von = (int) strpos($mit, 'Derselbe Weg über FTP');
+    $bis = (int) strpos($mit, '<h2 class="wa-panel__title">Paket<');
+    $tafel = substr($mit, $von, $bis - $von);
     ok(str_contains($tafel, '/projekt/7/archiv'), 'Der Schnitt liegt hinter den Knoepfen');
     ok(!str_contains($tafel, 'disabled'), 'Mit Zugang sind beide scharf');
 });
@@ -7206,6 +7210,340 @@ test('Der Empfaenger nimmt nur an, was unterschrieben und drinnen ist', function
         'Ein neuer Schluessel laesst sich setzen');
 
     \WebAtze\Core\Db::delete('projects', 'id IN (:a, :b)', ['a' => $projekt, 'b' => $zweites]);
+});
+
+// ==================================================================
+test('Der Empfaenger laesst sich nicht ueberreden - im Durchlauf gemessen', function (): void {
+    // Bisher wurde die Datei nur gelesen: Steht "hash_equals" darin,
+    // steht "realpath" darin. Das findet eine geloeschte Wache - nicht
+    // eine, die dasteht und nicht greift. Und seit der Empfaenger auch
+    // herausgibt statt nur anzunehmen, ist genau das der Unterschied.
+    $schluessel = bin2hex(random_bytes(32));
+    $platz = empfaenger_platz($schluessel);
+
+    if ($platz === null) {
+        fehler('Der Testserver fuer den Empfaenger startete nicht');
+
+        return;
+    }
+
+    try {
+        // -------------------------------------------- was gehen soll
+        is(200, empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel)['status'],
+            'Ein Hallo kommt durch');
+
+        ok(empfaenger_lauf($platz, [
+            'aktion' => 'schreiben',
+            'pfad' => 'index.html',
+            'inhalt' => base64_encode('<h1>Hallo</h1>'),
+        ], $schluessel)['ok'], 'Eine Datei laesst sich schreiben');
+
+        ok(is_file($platz['ordner'] . '/index.html'), 'Und sie liegt danach wirklich da');
+
+        ok(empfaenger_lauf($platz, [
+            'aktion' => 'schreiben',
+            'pfad' => 'assets/stil.css',
+            'inhalt' => base64_encode('body{}'),
+        ], $schluessel)['ok'], 'Auch in einen Unterordner, den es noch nicht gab');
+
+        $liste = empfaenger_lauf($platz, ['aktion' => 'liste'], $schluessel);
+        $namen = array_column((array) ($liste['daten']['dateien'] ?? []), 'pfad');
+
+        sort($namen);
+        is(['assets/stil.css', 'index.html'], $namen, 'Die Liste nennt beide Dateien');
+
+        // Sich selbst und den Einmalwert-Merker nicht: Beide gehoeren
+        // zur Uebertragung und nicht zur Website. Kaemen sie mit, stuende
+        // der Schluessel im Archiv des Kunden.
+        ok(!in_array('webatze-empfang.php', $namen, true), 'Sich selbst nennt sie nicht');
+        ok(!in_array('.webatze-einmal', $namen, true), 'Und den Einmalwert-Merker auch nicht');
+
+        $geholt = empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'index.html'], $schluessel);
+        is('<h1>Hallo</h1>', base64_decode((string) ($geholt['daten']['inhalt'] ?? ''), true),
+            'Und was geschrieben wurde, kommt auch wieder zurueck');
+
+        // ------------------------------------------- was nicht gehen darf
+        $fremd = bin2hex(random_bytes(32));
+
+        foreach ([
+            'Ohne Unterschrift wird nicht aufgelistet' =>
+                [['aktion' => 'liste'], ['ohneUnterschrift' => true], 401],
+            'Ohne Unterschrift wird nichts herausgegeben' =>
+                [['aktion' => 'holen', 'pfad' => 'index.html'], ['ohneUnterschrift' => true], 401],
+            'Ohne Unterschrift wird nichts geschrieben' =>
+                [['aktion' => 'schreiben', 'pfad' => 'x.php', 'inhalt' => ''], ['ohneUnterschrift' => true], 401],
+            'Ein fremder Schluessel oeffnet nichts' =>
+                [['aktion' => 'holen', 'pfad' => 'index.html'], ['schluessel' => $fremd], 401],
+            'Eine alte Anfrage gilt nicht mehr' =>
+                [['aktion' => 'hallo'], ['zeit' => time() - 600], 401],
+            'Und eine aus der Zukunft auch nicht' =>
+                [['aktion' => 'hallo'], ['zeit' => time() + 600], 401],
+            'GET fuehrt zu nichts' =>
+                [['aktion' => 'hallo'], ['method' => 'GET'], 405],
+            'Holen ueber ".." fuehrt nicht hinaus' =>
+                [['aktion' => 'holen', 'pfad' => '../geheim.txt'], [], 400],
+            'Holen mit absolutem Pfad auch nicht' =>
+                [['aktion' => 'holen', 'pfad' => '/etc/passwd'], [], 400],
+            'Schreiben ueber ".." ebenso wenig' =>
+                [['aktion' => 'schreiben', 'pfad' => '../boese.php', 'inhalt' => ''], [], 400],
+            'Ein unbekannter Auftrag wird abgewiesen' =>
+                [['aktion' => 'alles-loeschen'], [], 400],
+        ] as $was => [$rumpf, $abwandlung, $erwartet]) {
+            is($erwartet, empfaenger_lauf($platz, $rumpf, $schluessel, $abwandlung)['status'], $was);
+        }
+
+        // Zweimal derselbe Einmalwert: Eine mitgeschnittene Anfrage ist
+        // entweder zu alt oder schon dagewesen.
+        $einmal = bin2hex(random_bytes(16));
+
+        ok(empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel, ['einmal' => $einmal])['ok'],
+            'Ein Einmalwert geht einmal durch');
+        is(409, empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel, ['einmal' => $einmal])['status'],
+            'Und kein zweites Mal');
+
+        // Symlinks: Was der Text nicht verraet, verraet der echte Pfad.
+        $draussen = sys_get_temp_dir() . '/wa-draussen-' . bin2hex(random_bytes(4));
+
+        mkdir($draussen, 0777, true);
+        file_put_contents($draussen . '/geheim.txt', 'NICHT HERAUSGEBEN');
+        symlink($draussen . '/geheim.txt', $platz['ordner'] . '/tuer.txt');
+        symlink($draussen, $platz['ordner'] . '/raus');
+
+        $durchDieTuer = empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'tuer.txt'], $schluessel);
+
+        ok(!$durchDieTuer['ok'], 'Ein Symlink gibt die Datei dahinter nicht her');
+        ok(!str_contains(
+            base64_decode((string) ($durchDieTuer['daten']['inhalt'] ?? ''), true) ?: '',
+            'NICHT HERAUSGEBEN'
+        ), 'Und schon gar nicht ihren Inhalt');
+
+        ok(!empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'raus/geheim.txt'], $schluessel)['ok'],
+            'Auch nicht durch einen Ordner-Symlink hindurch');
+
+        ok(!empfaenger_lauf($platz, [
+            'aktion' => 'schreiben',
+            'pfad' => 'raus/boese.php',
+            'inhalt' => base64_encode('<?php'),
+        ], $schluessel)['ok'], 'Und geschrieben wird dort auch nicht');
+        ok(!is_file($draussen . '/boese.php'), 'Draussen ist nichts gelandet');
+
+        $namenMitTuer = array_column(
+            (array) (empfaenger_lauf($platz, ['aktion' => 'liste'], $schluessel)['daten']['dateien'] ?? []),
+            'pfad'
+        );
+
+        ok(!in_array('tuer.txt', $namenMitTuer, true), 'Die Liste nennt Symlinks erst gar nicht');
+        ok(!in_array('raus/geheim.txt', $namenMitTuer, true), 'Und steigt auch nicht durch sie hinab');
+
+        @unlink($draussen . '/geheim.txt');
+        @rmdir($draussen);
+
+        // Und zum Schluss raeumt er sich selbst weg.
+        ok(empfaenger_lauf($platz, ['aktion' => 'fertig'], $schluessel)['ok'], 'Er nimmt das Ende an');
+        ok(!is_file($platz['ordner'] . '/webatze-empfang.php'), 'Und liegt danach nicht mehr da');
+        ok(!is_file($platz['ordner'] . '/.webatze-einmal'), 'Der Merker ist auch weg');
+    } finally {
+        empfaenger_ende($platz);
+    }
+});
+
+// ==================================================================
+test('Hinauf und herunter, beides ueber HTTPS', function (): void {
+    // Der ganze Weg an einem Stueck: ein Archiv hinauf, derselbe Stand
+    // zurueck. Gegen einen echten Webserver, damit auch die Seite
+    // dazwischen - Unterschrift, Zeitfenster, Pfadpruefung - wirklich
+    // durchlaufen wird.
+    putenv('no_proxy=127.0.0.1,localhost');
+    putenv('NO_PROXY=127.0.0.1,localhost');
+
+    $id = (int) \WebAtze\Core\Db::insert('projects', [
+        'name' => 'Weg ueber HTTPS',
+        'slug' => 'https-weg-' . bin2hex(random_bytes(4)),
+        'status' => 'ready',
+        'created_at' => \WebAtze\Core\Db::now(),
+        'updated_at' => \WebAtze\Core\Db::now(),
+    ]);
+
+    $platz = empfaenger_platz(\WebAtze\Build\Empfang::schluessel($id));
+
+    if ($platz === null) {
+        fehler('Der Testserver fuer den Empfaenger startete nicht');
+        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
+
+        return;
+    }
+
+    $projekt = [
+        'id' => $id,
+        'slug' => 'https-weg',
+        'name' => 'Weg ueber HTTPS',
+        'domain' => 'http://127.0.0.1:' . $platz['port'],
+    ];
+
+    $archiv = sys_get_temp_dir() . '/wa-https-' . bin2hex(random_bytes(4)) . '.zip';
+    $zurueck = sys_get_temp_dir() . '/wa-https-zurueck-' . bin2hex(random_bytes(4)) . '.zip';
+
+    try {
+        ok(\WebAtze\Build\Empfang::erreichbar($projekt)['ok'], 'Der Empfaenger meldet sich');
+
+        // Ein Archiv mit dem gemeinsamen Stamm, den archivPlan
+        // wegschneidet - so kommt es aus dem Auftragstext zurueck.
+        $zip = new ZipArchive();
+        $zip->open($archiv, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+        $zip->addFromString('website/index.html', '<h1>Hallo</h1>');
+        $zip->addFromString('website/assets/stil.css', 'body{color:red}');
+        $zip->addFromString('website/bilder/logo.svg', '<svg/>');
+        $zip->close();
+
+        // Liegen lassen, denn gleich soll derselbe Stand zurueck.
+        $hinauf = \WebAtze\Build\Empfang::senden($projekt, $archiv, null, 60.0, false);
+
+        ok($hinauf['ok'], 'Das Archiv geht hinauf');
+        is(3, $hinauf['files'], 'Alle drei Dateien');
+        ok(!($hinauf['aufgeraeumt'] ?? true), 'Mit Haekchen bleibt der Empfaenger liegen');
+        ok(is_file($platz['ordner'] . '/webatze-empfang.php'), 'Und liegt auch wirklich noch da');
+
+        // Der gemeinsame Stamm ist weg: Die Startseite liegt oben.
+        ok(is_file($platz['ordner'] . '/index.html'), 'Die Startseite liegt im Zielverzeichnis');
+        ok(is_file($platz['ordner'] . '/assets/stil.css'), 'Der Unterordner ebenso');
+
+        $zip2 = new ZipArchive();
+        $zip2->open($zurueck, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+        $stand = \WebAtze\Build\Empfang::holen($projekt, $zip2, 60.0, null, true);
+        $zip2->close();
+
+        ok($stand['ok'], 'Und derselbe Stand kommt zurueck');
+        is(3, $stand['files'], 'Wieder alle drei');
+        ok($stand['aufgeraeumt'], 'Ohne Haekchen raeumt er sich diesmal weg');
+        ok(!is_file($platz['ordner'] . '/webatze-empfang.php'), 'Und ist danach weg');
+
+        $gelesen = new ZipArchive();
+        $gelesen->open($zurueck);
+        $inhalt = (string) $gelesen->getFromName('index.html');
+        $anzahl = $gelesen->numFiles;
+        $gelesen->close();
+
+        is(3, $anzahl, 'Im Rueckarchiv liegen drei Dateien');
+        is('<h1>Hallo</h1>', $inhalt, 'Und der Inhalt ist derselbe');
+
+        // Ist er weg, sagt die Probe das - und nennt den Grund. Eine
+        // Website mit Front-Controller antwortet auf eine fehlende Datei
+        // mit 200 und ihrer Startseite; "Antwort 200 vom Empfaenger"
+        // waere dann die Unwahrheit an der heikelsten Stelle.
+        $danach = \WebAtze\Build\Empfang::erreichbar($projekt);
+
+        ok(!$danach['ok'], 'Danach meldet er sich nicht mehr');
+        ok(str_contains($danach['error'], 'nicht der Empfänger')
+            || str_contains($danach['error'], '404'),
+            'Und der Grund steht dabei, nicht bloss eine Zahl');
+    } finally {
+        empfaenger_ende($platz);
+        @unlink($archiv);
+        @unlink($zurueck);
+        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
+    }
+});
+
+// ==================================================================
+test('Der Weg ueber HTTPS steht oben und sagt, woran er ist', function (): void {
+    // Er war ein zugeklappter Notausgang unter der Ueberschrift "FTP
+    // kommt nicht durch?". Das stimmt nicht mehr: Wo die Datenverbindung
+    // verworfen wird, ist er nicht die Ausnahme, sondern der Weg. Also
+    // steht er zuoberst - und sagt von selbst, ob er benutzbar ist.
+    $bauen = static function (array $projekt, array $empfang): string {
+        return \WebAtze\Core\View::partial('admin/deploy', [
+            'project' => ['id' => 7, 'name' => 'Probe', 'status' => 'draft', 'brief' => '{}'] + $projekt,
+            'target' => null,
+            'builds' => [],
+            'job' => null,
+            'brief' => [],
+            'gefunden' => [],
+            'empfang' => $empfang,
+            'hostingAccounts' => [],
+        ]);
+    };
+
+    $ohneAdresse = $bauen([], []);
+    $frisch = $bauen(['domain' => 'kunde.ch'], []);
+    $liegt = $bauen(['domain' => 'kunde.ch'], ['ok' => true, 'error' => '', 'zeit' => '05.09.2026 14:12']);
+    $fehlt = $bauen(['domain' => 'kunde.ch'], [
+        'ok' => false,
+        'error' => 'Unter dieser Adresse liegt keine Empfangsdatei (404).',
+        'zeit' => '05.09.2026 14:12',
+    ]);
+
+    // Zuoberst heisst zuoberst: vor der FTP-Tafel, nicht darunter.
+    ok(strpos($frisch, 'Website hochladen und holen')
+        < strpos($frisch, 'Derselbe Weg über FTP'),
+        'Der Weg ueber HTTPS steht vor dem ueber FTP');
+
+    // Die drei Zustaende der Statuszeile.
+    ok(str_contains($ohneAdresse, 'keine Adresse'), 'Ohne Adresse sagt er das');
+    ok(str_contains($ohneAdresse, '/websites/7'), 'Und wo sie einzutragen ist');
+    ok(str_contains($ohneAdresse, 'disabled'), 'Und laesst sich nicht bedienen');
+
+    ok(str_contains($frisch, 'noch nicht nachgesehen'), 'Frisch heisst: noch nicht nachgesehen');
+    ok(!str_contains($frisch, 'liegt bereit'), 'Und behauptet nichts anderes');
+
+    ok(str_contains($liegt, 'liegt bereit'), 'Liegt er, steht das da');
+    ok(str_contains($liegt, '05.09.2026 14:12'), 'Mit dem Zeitpunkt der Messung');
+    ok(str_contains($fehlt, 'nicht da'), 'Fehlt er, steht das da');
+    ok(str_contains($fehlt, 'keine Empfangsdatei'), 'Samt dem gemessenen Grund');
+
+    // Die drei Handgriffe stehen offen, solange sie noetig sind - und
+    // sind aus dem Weg, sobald sie getan sind.
+    ok(str_contains($frisch, '<details class="wa-help" open>'), 'Die Anleitung steht offen');
+    ok(!str_contains($liegt, '<details class="wa-help" open>'), 'Und klappt zu, wenn er liegt');
+
+    // Entfernen nur, wenn es etwas zu entfernen gibt: Ein Knopf, der
+    // nichts bewirkt, verspricht eine Wirkung.
+    ok(str_contains($liegt, '/empfaenger/weg'), 'Entfernen gibt es, wenn er liegt');
+    ok(!str_contains($frisch, '/empfaenger/weg'), 'Und nicht, wenn er nicht liegt');
+
+    // Beide Richtungen, beide ueber HTTPS.
+    foreach (['/projekt/7/archiv-bruecke', '/projekt/7/stand-bruecke', '/projekt/7/empfaenger/probe',
+              '/projekt/7/empfaenger'] as $ziel) {
+        ok(str_contains($liegt, $ziel), 'Die Seite fuehrt zu ' . $ziel);
+    }
+
+    // Das Haekchen ist da und aus: Wegraeumen bleibt die Vorgabe.
+    ok(substr_count($liegt, 'name="liegenlassen"') === 2,
+        'Beide Richtungen koennen den Empfaenger liegen lassen');
+    ok(!str_contains($liegt, 'name="liegenlassen" value="1" checked'),
+        'Aber nicht von selbst');
+
+    // Und die Adressen dahinter gibt es wirklich.
+    $router = new Router();
+    \WebAtze\Core\Routes::register($router);
+
+    $basis = '/' . trim((string) \WebAtze\Core\Config::get('create_path', 'create'), '/');
+
+    foreach ([
+        ['POST', '/projekt/7/archiv-bruecke', 'DeployController@uploadUeberBruecke'],
+        ['POST', '/projekt/7/stand-bruecke', 'DeployController@pullLiveBruecke'],
+        ['POST', '/projekt/7/empfaenger/probe', 'DeployController@empfangProbe'],
+        ['POST', '/projekt/7/empfaenger/weg', 'DeployController@empfangWeg'],
+        ['GET', '/projekt/7/empfaenger', 'DeployController@empfangsdatei'],
+    ] as [$methode, $pfad, $ziel]) {
+        is($ziel, route($router, $methode, $basis . $pfad), $pfad . ' fuehrt zum richtigen Ziel');
+    }
+
+    // Der Rueckweg ist ein eigener Auftrag - sonst liefe er im
+    // Web-Request und der Browser braeche ab, waehrend er weiterlaeuft.
+    $pipeline = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Pipeline.php');
+
+    ok(str_contains($pipeline, "'stand-per-bruecke' => self::pullLive(\$job, \$budget, 'https')"),
+        'Es gibt einen Auftrag fuer den Stand ueber HTTPS');
+
+    // Und er teilt sich alles Weitere mit dem FTP-Weg: dasselbe Archiv,
+    // dieselbe Zeile in der Paketliste, dasselbe Aufraeumen. Zwei
+    // getrennte Fassungen davon waeren zwei Wahrheiten.
+    $exporter = new ReflectionMethod(\WebAtze\Build\ZipExporter::class, 'pullLive');
+    $namen = array_map(static fn (ReflectionParameter $p): string => $p->getName(),
+        $exporter->getParameters());
+
+    ok(in_array('weg', $namen, true), 'pullLive nimmt den Weg als Angabe entgegen');
+    ok(in_array('liegenLassen', $namen, true), 'Und weiss, ob der Empfaenger liegen bleibt');
 });
 
 // ==================================================================

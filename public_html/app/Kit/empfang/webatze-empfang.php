@@ -5,9 +5,9 @@ declare(strict_types=1);
 /**
  * WebAtze-Empfänger.
  *
- * Diese Datei nimmt eine Website entgegen, wenn FTP nicht durchkommt.
- * Sie wird einmal von Hand hierher gelegt, tut eine Sache, und löscht
- * sich danach selbst wieder.
+ * Diese Datei nimmt eine Website entgegen und gibt sie wieder heraus,
+ * wenn FTP nicht durchkommt. Sie wird einmal von Hand hierher gelegt und
+ * löscht sich danach selbst wieder.
  *
  * Wer sie hier findet und nicht kennt: Sie darf weg. Sie gehört zu
  * einer Veröffentlichung, die entweder gelaufen oder abgebrochen ist.
@@ -22,8 +22,13 @@ declare(strict_types=1);
  *   3. Zeitfenster von zwei Minuten und ein Einmalwert, der vermerkt
  *      wird. Eine mitgeschnittene Anfrage ist entweder zu alt oder
  *      schon dagewesen.
- *   4. Pfad. Jeder Zielpfad muss unterhalb dieses Ordners bleiben -
- *      geprüft an den einzelnen Namen, nicht am ganzen Text.
+ *   4. Pfad. Jeder Pfad muss unterhalb dieses Ordners bleiben - geprüft
+ *      an den einzelnen Namen, nicht am ganzen Text.
+ *
+ * Die Pfadprüfung steht in *einer* Funktion, und Schreiben wie Lesen
+ * gehen beide hindurch. Ein Lesezweig mit eigener, schwächerer Prüfung
+ * ist genau die Sorte Fehler, die man erst bemerkt, wenn sie ausgenutzt
+ * wurde.
  */
 
 const SCHLUESSEL = '%%SCHLUESSEL%%';
@@ -31,14 +36,27 @@ const FENSTER = 120;
 const HOECHSTALTER = 86400;
 const MAX_BYTES = 20 * 1024 * 1024;
 
-/** Antwort und Schluss. */
-function raus(bool $ok, string $text = '', int $status = 200): void
+/** Wie viele Dateien eine Auflistung höchstens nennt. */
+const MAX_EINTRAEGE = 5000;
+
+/** Wie tief sie dabei steigt. */
+const MAX_TIEFE = 12;
+
+/** Der Merker für die schon gesehenen Einmalwerte. */
+const MERKER = '.webatze-einmal';
+
+/**
+ * Antwort und Schluss.
+ *
+ * @param array<string, mixed> $mehr
+ */
+function raus(bool $ok, string $text = '', int $status = 200, array $mehr = []): void
 {
     http_response_code($ok ? $status : ($status === 200 ? 400 : $status));
     header('Content-Type: application/json');
     header('X-Robots-Tag: noindex, nofollow');
 
-    echo json_encode(['ok' => $ok, 'error' => $text]);
+    echo json_encode(['ok' => $ok, 'error' => $text] + $mehr);
     exit;
 }
 
@@ -46,7 +64,127 @@ function raus(bool $ok, string $text = '', int $status = 200): void
 function verschwinden(): void
 {
     @unlink(__FILE__);
-    @unlink(__DIR__ . '/.webatze-einmal');
+    @unlink(__DIR__ . '/' . MERKER);
+}
+
+/**
+ * Aus einem gewünschten Pfad einen echten machen - oder abbrechen.
+ *
+ * Der Unterschied zwischen den beiden Richtungen sitzt am Ende: Beim
+ * Schreiben gibt es die Datei noch nicht, also kann nur der Ordner
+ * gegengeprüft werden; beim Lesen gibt es sie, also wird sie selbst
+ * geprüft. Alles davor ist für beide dasselbe.
+ */
+function zielPfad(string $ziel, bool $zumLesen): string
+{
+    if ($ziel === '' || strlen($ziel) > 255 || str_contains($ziel, "\0")) {
+        raus(false, 'Ungültiger Pfad.');
+    }
+
+    if ($ziel[0] === '/' || $ziel[0] === '\\' || preg_match('/^[A-Za-z]:/', $ziel) === 1) {
+        raus(false, 'Nur relative Pfade.');
+    }
+
+    // Geprüft wird an den einzelnen Namen und nicht am ganzen Text: Ein
+    // ".." das mitten in einem Namen steht, ist harmlos; eines als
+    // eigener Schritt führt aus dem Ordner heraus.
+    foreach (explode('/', str_replace('\\', '/', $ziel)) as $schritt) {
+        if ($schritt === '..' || $schritt === '.' || $schritt === '') {
+            raus(false, 'Der Pfad führt aus dem Ordner heraus.');
+        }
+    }
+
+    $voll = __DIR__ . '/' . $ziel;
+    $hier = realpath(__DIR__);
+
+    if ($hier === false) {
+        raus(false, 'Der eigene Ordner ist nicht auffindbar.');
+    }
+
+    if ($zumLesen) {
+        // Gegenprobe am echten Pfad: Ein Symlink verrät sich im Text
+        // nicht, im aufgelösten Pfad schon.
+        $echt = realpath($voll);
+
+        if ($echt === false || !is_file($echt) || is_link($voll)) {
+            raus(false, 'Diese Datei gibt es hier nicht.', 404);
+        }
+
+        if (!str_starts_with($echt, $hier . '/')) {
+            raus(false, 'Das Ziel liegt ausserhalb.');
+        }
+
+        return $echt;
+    }
+
+    $ordner = dirname($voll);
+
+    if (!is_dir($ordner) && !@mkdir($ordner, 0755, true) && !is_dir($ordner)) {
+        raus(false, 'Der Ordner liess sich nicht anlegen.');
+    }
+
+    $echt = realpath($ordner);
+
+    if ($echt === false || !str_starts_with($echt . '/', $hier . '/')) {
+        raus(false, 'Das Ziel liegt ausserhalb.');
+    }
+
+    return $voll;
+}
+
+/**
+ * Den eigenen Ordner ablaufen.
+ *
+ * Ohne Symlinks: Einer, der nach draussen zeigt, brächte den halben
+ * Server ins Archiv. Und mit Deckel, weil eine Auflistung, die nicht
+ * fertig wird, so nutzlos ist wie gar keine.
+ *
+ * @param array<int, array{pfad:string, bytes:int}> $treffer
+ */
+function sammeln(string $ordner, string $vorsatz, int $tiefe, array &$treffer): void
+{
+    if ($tiefe > MAX_TIEFE || count($treffer) >= MAX_EINTRAEGE) {
+        return;
+    }
+
+    $namen = @scandir($ordner);
+
+    if ($namen === false) {
+        return;
+    }
+
+    sort($namen);
+
+    foreach ($namen as $name) {
+        if ($name === '.' || $name === '..' || count($treffer) >= MAX_EINTRAEGE) {
+            continue;
+        }
+
+        $voll = $ordner . '/' . $name;
+        $relativ = $vorsatz === '' ? $name : $vorsatz . '/' . $name;
+
+        if (is_link($voll)) {
+            continue;
+        }
+
+        // Sich selbst und den eigenen Merker nicht: Beide gehören zu
+        // dieser Übertragung und nicht zur Website.
+        if ($voll === __FILE__ || $name === MERKER) {
+            continue;
+        }
+
+        if (is_dir($voll)) {
+            sammeln($voll, $relativ, $tiefe + 1, $treffer);
+
+            continue;
+        }
+
+        if (!is_file($voll)) {
+            continue;
+        }
+
+        $treffer[] = ['pfad' => $relativ, 'bytes' => (int) @filesize($voll)];
+    }
 }
 
 // ---------------------------------------------------------------- Alter
@@ -87,7 +225,7 @@ if (!hash_equals($erwartet, $gesendet)) {
 }
 
 // ----------------------------------------------------------- Einmalwert
-$merker = __DIR__ . '/.webatze-einmal';
+$merker = __DIR__ . '/' . MERKER;
 $gesehen = @file_get_contents($merker);
 $gesehen = is_string($gesehen) ? explode("\n", $gesehen) : [];
 
@@ -117,51 +255,47 @@ if ($aktion === 'fertig') {
     raus(true);
 }
 
+if ($aktion === 'liste') {
+    $treffer = [];
+    sammeln(__DIR__, '', 0, $treffer);
+
+    raus(true, '', 200, [
+        'dateien' => $treffer,
+        // Ehrlich sagen, wenn der Deckel erreicht wurde - eine
+        // abgeschnittene Liste, die vollständig aussieht, wäre die
+        // schlechtere Auskunft.
+        'abgeschnitten' => count($treffer) >= MAX_EINTRAEGE,
+    ]);
+}
+
+if ($aktion === 'holen') {
+    $voll = zielPfad((string) ($daten['pfad'] ?? ''), true);
+    $groesse = (int) @filesize($voll);
+
+    if ($groesse > MAX_BYTES) {
+        raus(false, 'Diese Datei ist zu gross für den Rückweg.', 413);
+    }
+
+    $inhalt = @file_get_contents($voll);
+
+    if ($inhalt === false) {
+        raus(false, 'Die Datei liess sich nicht lesen.');
+    }
+
+    raus(true, '', 200, ['inhalt' => base64_encode($inhalt)]);
+}
+
 if ($aktion !== 'schreiben') {
     raus(false, 'Unbekannter Auftrag.');
 }
 
-$ziel = (string) ($daten['pfad'] ?? '');
 $inhalt = base64_decode((string) ($daten['inhalt'] ?? ''), true);
 
 if ($inhalt === false) {
     raus(false, 'Der Inhalt ist nicht lesbar.');
 }
 
-// ---------------------------------------------------------------- Pfad
-//
-// Geprüft wird an den einzelnen Namen und nicht am ganzen Text: Ein
-// "..", das mitten in einem Namen steht, ist harmlos; eines als
-// eigener Schritt führt aus dem Ordner heraus.
-if ($ziel === '' || strlen($ziel) > 255 || str_contains($ziel, "\0")) {
-    raus(false, 'Ungültiger Pfad.');
-}
-
-if ($ziel[0] === '/' || $ziel[0] === '\\' || preg_match('/^[A-Za-z]:/', $ziel) === 1) {
-    raus(false, 'Nur relative Pfade.');
-}
-
-foreach (explode('/', str_replace('\\', '/', $ziel)) as $schritt) {
-    if ($schritt === '..' || $schritt === '.' || $schritt === '') {
-        raus(false, 'Der Pfad führt aus dem Ordner heraus.');
-    }
-}
-
-$voll = __DIR__ . '/' . $ziel;
-$ordner = dirname($voll);
-
-if (!is_dir($ordner) && !@mkdir($ordner, 0755, true) && !is_dir($ordner)) {
-    raus(false, 'Der Ordner liess sich nicht anlegen.');
-}
-
-// Und zum Schluss die Gegenprobe am echten Pfad: Symlinks und alles
-// andere, was der Text nicht verrät.
-$echt = realpath($ordner);
-$hier = realpath(__DIR__);
-
-if ($echt === false || $hier === false || !str_starts_with($echt . '/', $hier . '/')) {
-    raus(false, 'Das Ziel liegt ausserhalb.');
-}
+$voll = zielPfad((string) ($daten['pfad'] ?? ''), false);
 
 if (@file_put_contents($voll, $inhalt, LOCK_EX) === false) {
     raus(false, 'Die Datei liess sich nicht schreiben.');

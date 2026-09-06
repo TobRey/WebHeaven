@@ -283,11 +283,19 @@ final class Routes
             // Ein fertiges Archiv statt eines gebauten Pakets - der Weg
             // ohne den eingebauten Generator.
             $r->post($base . '/projekt/{id}/archiv', 'DeployController@uploadZip');
-    $r->post($base . '/projekt/{id}/ftp/ausgang', 'DeployController@ausgang');
-    $r->get($base . '/projekt/{id}/empfaenger', 'DeployController@empfangsdatei');
-    $r->post($base . '/projekt/{id}/archiv-bruecke', 'DeployController@uploadUeberBruecke');
             $r->post($base . '/projekt/{id}/ftp', 'DeployController@saveTarget');
             $r->post($base . '/projekt/{id}/ftp/testen', 'DeployController@testTarget');
+            $r->post($base . '/projekt/{id}/ftp/ausgang', 'DeployController@ausgang');
+
+            // Der Weg ueber HTTPS: Empfangsdatei holen, nachsehen ob sie
+            // liegt, hinauf, herunter, und wieder wegraeumen. Er braucht
+            // keine FTP-Zugangsdaten, nur die Adresse der Website - und
+            // deshalb steht er auch nicht unter den FTP-Routen.
+            $r->get($base . '/projekt/{id}/empfaenger', 'DeployController@empfangsdatei');
+            $r->post($base . '/projekt/{id}/empfaenger/probe', 'DeployController@empfangProbe');
+            $r->post($base . '/projekt/{id}/empfaenger/weg', 'DeployController@empfangWeg');
+            $r->post($base . '/projekt/{id}/archiv-bruecke', 'DeployController@uploadUeberBruecke');
+            $r->post($base . '/projekt/{id}/stand-bruecke', 'DeployController@pullLiveBruecke');
             $r->post($base . '/projekt/{id}/domain', 'DomainController@save');
             $r->post($base . '/projekt/{id}/domain/pruefen', 'DomainController@check');
             $r->post($base . '/projekt/{id}/domain/schritt', 'DomainController@step');

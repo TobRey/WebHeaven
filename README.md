@@ -318,8 +318,44 @@ darf, und entsprechend abgesichert:
   Es ist die Website des Kunden.
 
 Fehlt die Bruecke - eine fremde Seite, ein Kunde ohne Backend -, geht es
-ueber FTP. Langsamer, aber ueberall dort moeglich, wo Zugangsdaten
-hinterlegt sind.
+ueber den Empfaenger oder ueber FTP.
+
+### Der Empfaenger: eine ganze Website hinauf und herunter
+
+Die Bruecke oben ist fuer den Editor: Sie nimmt *Daten* entgegen und
+schreibt eine Seite neu. Eine ganze Website ist etwas anderes - die
+besteht aus PHP, und die Bruecke nimmt bewusst keinen Code an.
+
+Dafuer gibt es den **Empfaenger**: eine Datei `webatze-empfang.php`, die
+einmal von Hand in das Verzeichnis der Kundenwebsite gelegt wird. Danach
+laeuft alles ueber HTTPS auf Port 443 - hinauf wie herunter.
+
+Warum nicht einfach FTP? Weil FTP zwei Verbindungen braucht: eine fuer
+die Befehle auf Port 21 und fuer jede Datei eine zweite auf einem hohen
+Port. Genau die zweite wird auf geteiltem Hosting oft verworfen, und
+dann hilft kein Einstellen mehr - gemessen an einem Kundenserver, dessen
+`PASV`-Adresse von aussen erreichbar war und vom eigenen Server aus in
+eine Zeitueberschreitung lief. Der Knopf *Kann dieser Server ueberhaupt
+FTP?* auf der Veroeffentlichen-Seite trennt die beiden Faelle.
+
+Nebenbei faellt die Pfadfrage weg: Der Empfaenger arbeitet immer in dem
+Ordner, in dem er selbst liegt. Ein falsches Verzeichnis kann es nicht
+geben.
+
+Abgesichert wie die Bruecke - dieselbe Unterschrift, dasselbe
+Zeitfenster, derselbe Einmalwert - und darueber hinaus:
+
+* **Er verschwindet wieder.** Nach der Uebertragung loescht er sich
+  selbst; spaetestens nach 24 Stunden ohnehin. Ein Haekchen laesst ihn
+  fuer die naechste Uebertragung liegen, ein Knopf entfernt ihn sofort.
+* **Er kommt aus seinem Ordner nicht heraus.** Jeder Pfad wird an den
+  einzelnen Namen geprueft und danach am aufgeloesten Pfad gegen
+  Symlinks - beim Schreiben wie beim Lesen, durch dieselbe Funktion.
+* **Eigener Schluessel je Website.** Nicht der der Bruecke: Wer den
+  Empfaenger von einer Website liest, haette sonst alle offen.
+
+FTP und SFTP bleiben daneben stehen, fuer die Server, bei denen sie
+durchkommen.
 
 ### Die CSS-Notfallebene
 
@@ -455,7 +491,7 @@ php -S 127.0.0.1:8080 -t public_html public_html/index.php
 
 | Befehl | Wofür |
 |---|---|
-| `php tests/run.php` | der Testlauf (1899 Prüfungen) |
+| `php tests/run.php` | der Testlauf (2343 Prüfungen) |
 | `php tests/run.php --seiten-festhalten` | den Aufbau der eigenen Seiten neu festhalten |
 | `php tools/eigene-website-uebernehmen.php` | zeigt, was aus der eigenen Website als Daten entstünde |
 | `php tools/probelauf/durchlauf.php` | eine ganze Website bauen, vom Formular bis zum Paket |

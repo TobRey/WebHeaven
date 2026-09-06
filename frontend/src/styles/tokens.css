@@ -103,6 +103,8 @@
   --wa-accent-quiet:  rgb(139 133 255 / 0.14);
   --wa-secondary:     var(--wa-teal-300);
   --wa-secondary-quiet: rgb(47 224 220 / 0.14);
+  /* Auf dunklem Grund traegt dasselbe Tuerkis auch Kleinschrift. */
+  --wa-secondary-ink: var(--wa-teal-300);
 
   --wa-focus: var(--wa-teal-300);
 
@@ -260,6 +262,11 @@
   /* Türkis erreicht auf Weiss nur 2.07:1 – als Text kommt die dunkle Stufe. */
   --wa-secondary:     var(--wa-teal-600);
   --wa-secondary-quiet: rgb(23 200 200 / 0.12);
+  /* teal-600 traegt auf Weiss nur 3.93:1 - genug fuer Raender und grosse
+     Schrift, zu wenig fuer 12 und 14 Pixel. Gemessen im Hellen an der
+     Veroeffentlichen-Seite: aufklappbare Ueberschrift und <code> lagen
+     bei 3.67:1. teal-700 erreicht dort 5.81:1. */
+  --wa-secondary-ink: var(--wa-teal-700);
 
   --wa-focus: var(--wa-indigo-700);
 

@@ -31,13 +31,13 @@ final class FtpDeployer
     private const MAX_FETCH_BYTES = 8 * 1024 * 1024;
 
     /** Beim Holen des ganzen Stands: höchstens so viele Dateien. */
-    private const MAX_TREE_FILES = 5000;
+    public const MAX_TREE_FILES = 5000;
 
     /** Und zusammen höchstens so viel. */
-    private const MAX_TREE_BYTES = 200 * 1024 * 1024;
+    public const MAX_TREE_BYTES = 200 * 1024 * 1024;
 
     /** Und keine Verschachtelung tiefer als das. */
-    private const MAX_TREE_DEPTH = 8;
+    public const MAX_TREE_DEPTH = 8;
 
     /**
      * Was beim Holen des ganzen Stands übersprungen wird.
@@ -996,8 +996,12 @@ final class FtpDeployer
      *
      * Sicherungen einer Sicherung sind der klassische Weg, aus einer
      * 20-MB-Website ein 400-MB-Archiv zu machen.
+     *
+     * Oeffentlich, weil der Weg ueber HTTPS (`Empfang::holen()`)
+     * dieselbe Liste anwendet: Zwei Wege, die verschiedene Archive
+     * liefern, waeren schlimmer als einer.
      */
-    private static function baumUebergehen(string $relativ): bool
+    public static function baumUebergehen(string $relativ): bool
     {
         foreach (self::UEBERGEHEN as $muster) {
             if ($relativ === $muster || str_starts_with($relativ, $muster . '/')) {

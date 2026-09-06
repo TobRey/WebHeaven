@@ -217,23 +217,46 @@ final class ZipExporter
      *
      * Deshalb: wie eine Sicherung, nur eben jetzt und auf Knopfdruck.
      *
+     * Zwei Wege fuehren hierher. Ueber FTP holt `FtpDeployer::fetchTree()`
+     * den Stand, ueber HTTPS `Empfang::holen()` - beide liefern
+     * dieselbe Ergebnisform, und alles danach ist fuer beide dasselbe:
+     * Archiv, STAND.txt, Zeile in "builds", Aufraeumen.
+     *
      * @param callable|null $onProgress fn(int $dateien, string $pfad)
+     * @param string $weg 'ftp' oder 'https'
+     * @param bool $liegenLassen nur fuer 'https': Empfaenger nicht entfernen
      * @return array{path:string, bytes:int, files:int, abgeschnitten:bool}
      */
-    public static function pullLive(array $project, ?callable $onProgress = null, float $budget = 90.0): array
-    {
+    public static function pullLive(
+        array $project,
+        ?callable $onProgress = null,
+        float $budget = 90.0,
+        string $weg = 'ftp',
+        bool $liegenLassen = false
+    ): array {
         if (!class_exists(ZipArchive::class)) {
             throw new RuntimeException('Die PHP-Erweiterung "zip" fehlt auf diesem Server.');
         }
 
-        // Ueber targetFor(), damit auch hier der gemeinsame
-        // Hosting-Zugang greift und nicht nur beim Hochladen.
-        $target = FtpDeployer::targetFor((int) $project['id']);
+        $ueberHttps = $weg === 'https';
 
-        if ($target === null) {
+        // Ueber targetFor(), damit auch hier der gemeinsame
+        // Hosting-Zugang greift und nicht nur beim Hochladen. Der Weg
+        // ueber HTTPS braucht das nicht - er kennt nur die Adresse der
+        // Website und die Empfangsdatei darauf.
+        $target = $ueberHttps ? null : FtpDeployer::targetFor((int) $project['id']);
+
+        if (!$ueberHttps && $target === null) {
             throw new RuntimeException(
                 'Für diese Website sind keine Zugangsdaten hinterlegt. '
                 . 'Ohne sie lässt sich nicht nachsehen, was dort liegt.'
+            );
+        }
+
+        if ($ueberHttps && trim((string) ($project['domain'] ?? '')) === '') {
+            throw new RuntimeException(
+                'Diese Website hat keine Adresse. Ohne sie weiss der Weg über '
+                . 'HTTPS nicht, wen er anrufen soll.'
             );
         }
 
@@ -248,7 +271,9 @@ final class ZipExporter
             throw new RuntimeException('Die ZIP-Datei konnte nicht angelegt werden.');
         }
 
-        $ergebnis = FtpDeployer::fetchTree($target, $zip, $budget, $onProgress);
+        $ergebnis = $ueberHttps
+            ? Empfang::holen($project, $zip, $budget, $onProgress, !$liegenLassen)
+            : FtpDeployer::fetchTree((array) $target, $zip, $budget, $onProgress);
 
         if (!$ergebnis['ok']) {
             $zip->close();
@@ -298,6 +323,9 @@ final class ZipExporter
             'bytes' => $bytes,
             'files' => (int) $ergebnis['files'],
             'abgeschnitten' => (bool) $ergebnis['abgeschnitten'],
+            // Nur der Weg ueber HTTPS kennt das: Ob der Empfaenger
+            // danach noch dort liegt oder sich weggeraeumt hat.
+            'aufgeraeumt' => (bool) ($ergebnis['aufgeraeumt'] ?? false),
         ];
     }
 
