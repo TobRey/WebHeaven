@@ -220,7 +220,7 @@ Supportfrage lag deshalb schon einmal drei Tage.
 ### Websites: gebaute und hinzugefügte
 
 Unter *Websites* stehen alle an einem Ort. Eine, die WebAtze gebaut hat,
-führt auf ihre Projektseite mit Auftrag, Abschnitten und Paketen. Eine,
+führt auf ihre Projektseite mit Auftrag, Abschnitten und Ständen. Eine,
 die schon da war – von jemand anderem gemacht, in WordPress, irgendwo
 gehostet –, wird über *Website hinzufügen* eingetragen: Name, Adresse,
 Kunde, womit sie gebaut ist, wo sie liegt, Notizen.
@@ -369,11 +369,35 @@ Dafuer gibt es die **Direktbearbeitung** (`/create/direkt/<id>`):
   Verschieben und neue Abschnitte gibt es nicht - dafuer braucht es das Datenmodell.
 * Gespeichert wird die Datei selbst, mit **denselben Zeilenenden wie vorher**. Sonst
   gaelte beim naechsten Vergleich jede Zeile als geaendert.
-* Der Weg vom Kunden aus: *Kunde → Website editieren →* Archiv einwerfen, bearbeiten,
-  Paket herausnehmen.
+* Der Weg vom Kunden aus: *Kunde → Website editieren →* ZIP einwerfen, bearbeiten,
+  herunterladen. Das Fenster dazu enthaelt genau zwei Dinge: das Feld und die Liste
+  der Staende.
 
 Der Ordner, in dem gearbeitet wird, ist derselbe `live`-Ordner - was dort steht, faehrt
-beim naechsten Paket mit hinaus.
+beim naechsten Herunterladen mit hinaus.
+
+### Staende
+
+Ein **Stand** ist eine Fassung der Website: ein Archiv und der Zeitpunkt, an dem
+zuletzt darin gespeichert wurde. Einer ist aktiv - der, an dem gearbeitet wird.
+Die letzten zehn aelteren bleiben liegen und lassen sich wieder aktiv setzen
+(`Build\Staende`, Tabelle `site_versions`).
+
+Die Regel, um die es dabei geht, steht in einem Satz:
+
+> **Herunterladen packt immer den Ordner, in dem gearbeitet wird - frisch, bei jedem
+> Klick. Ein Archiv, das schon dalag, wird dafuer nie benutzt.**
+
+Vorher zeigte der Knopf auf den zuletzt abgelegten Eintrag. Nach einer Uebernahme war
+das ausgerechnet das gerade hochgeladene, unbearbeitete Archiv: Wer eine Ueberschrift
+aenderte, speicherte und herunterlud, bekam die Seite von vorher zurueck - und musste
+glauben, das Speichern sei kaputt. Deshalb gibt es die Adresse mit der Nummer darin
+(`/projekt/<id>/zip/<build>`) nicht mehr; `/projekt/<id>/stand` packt in diesem
+Augenblick.
+
+*Wiederherstellen* sichert vorher, woran gerade gearbeitet wird - immer, auch wenn der
+gewaehlte Stand schon der aktive ist. Gerade dann: Zwischen seinem Archiv und dem
+Ordner liegt genau die Arbeit, um die es geht.
 
 **Was noch nicht draussen ist, steht in der Liste.** Nicht als gepflegtes Merkmal,
 sondern aus den Daten: Ist die juengste Aenderung an einer Seite oder einem Abschnitt

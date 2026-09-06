@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace WebAtze\Http;
 
-use WebAtze\Build\{Uebernahme, ZipExporter, Zugang};
-use WebAtze\Core\{Audit, Config, Crypto, Db, Jobs, Logger, Request, Response, Session, View};
+use WebAtze\Build\Zugang;
+use WebAtze\Core\{Audit, Config, Crypto, Db, Jobs, Request, Response, Session, View};
 
 /**
  * Der Stand herein, das Paket hinaus.
@@ -50,11 +50,8 @@ final class DeployController
             'content' => View::partial('admin/deploy', [
                 'project' => $project,
                 'target' => $target,
-                'builds' => ZipExporter::listFor((int) $project['id']),
                 'job' => Jobs::activeFor((int) $project['id']),
                 'brief' => json_decode((string) $project['brief'], true) ?: [],
-                // Liegt ein uebernommener Stand bereit?
-                'uebernommen' => Uebernahme::vorhanden($project),
                 // Gibt es etwas, das noch nicht heruntergeladen wurde?
                 'offen' => \WebAtze\Domain\Websites::offeneAenderung($project),
                 // Der gemeinsame Zugang: Alle Websites liegen auf
@@ -62,60 +59,6 @@ final class DeployController
                 'hostingAccounts' => \WebAtze\Domain\HostingAccount::all(),
             ]),
         ]))->noCache()->noIndex();
-    }
-
-    /** Ein neues Paket schnüren. */
-    public function createZip(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        try {
-            $result = ZipExporter::create($project);
-            Audit::log('project.zipped', (string) $project['name'], ['version' => $result['version']], $request);
-            Session::flash('success', sprintf(
-                'Paket Version %d erstellt (%s).',
-                $result['version'],
-                format_bytes((int) $result['bytes'])
-            ));
-        } catch (\Throwable $e) {
-            Session::flash('error', $e->getMessage());
-        }
-
-        return $this->back($project);
-    }
-
-    /**
-     * Ein Paket herunterladen.
-     *
-     * Der Pfad wird über die Datenbank aufgelöst und muss zum Projekt
-     * gehören – über die Adresse lässt sich nichts anderes erreichen.
-     */
-    public function download(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        $path = ZipExporter::pathFor((int) $project['id'], $request->paramInt('build'));
-        if ($path === null) {
-            return Response::notFound('Dieses Paket gibt es nicht.');
-        }
-
-        Audit::log('project.download', (string) $project['name'], ['datei' => basename($path)], $request);
-
-        // Ab hier gilt: Was danach geaendert wird, ist beim Kunden noch
-        // nicht angekommen. Das ist die einzige Stelle, an der WebAtze
-        // ueberhaupt erfaehrt, dass ein Stand das Haus verlassen hat -
-        // die Uebertragung selbst sieht es ja nicht mehr.
-        Db::update('projects', ['downloaded_at' => Db::now()], 'id = :id', ['id' => (int) $project['id']]);
-
-        return Response::file($path, 'application/zip', true, basename($path))
-            ->noCache()
-            ->noIndex();
     }
 
     /** FTP-Zugangsdaten speichern. */

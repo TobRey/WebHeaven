@@ -85,7 +85,6 @@ final class EditorController
                 // Die zwei Enden der Schleife: Was hereinkam, und was
                 // noch hinaus muss. Uebertragen wird von Hand - also
                 // gehoert beides dorthin, wo gearbeitet wird.
-                'pakete' => \WebAtze\Build\ZipExporter::listFor((int) $projekt['id']),
                 'offen' => \WebAtze\Domain\Websites::offeneAenderung($projekt),
             ]),
         ]))->noCache()->noIndex();

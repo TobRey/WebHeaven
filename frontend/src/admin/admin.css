@@ -662,21 +662,71 @@
 
 .wa-transfer .wa-form__actions { margin-block-start: auto; }
 
-/* Das Fenster, mit dem eine Website bearbeitet wird: die ganze
-   Schleife an einer Stelle, in der Reihenfolge, in der sie ablaeuft. */
+/* Das Fenster, mit dem eine Website bearbeitet wird.
+
+   Zwei Dinge, mehr nicht: ein Feld fuer das ZIP, darunter die Staende.
+   Was hier vorher stand - Anleitung, Pakete, Versionen - beschrieb die
+   Innereien und nicht die Handgriffe. */
 .wa-einwurf { display: grid; gap: var(--wa-space-4); }
 
-.wa-einwurf__schritte {
-  margin: 0;
-  padding-inline-start: 1.2rem;
+.wa-einwurf__form { display: grid; gap: var(--wa-space-3); }
+
+.wa-einwurf__aktiv {
   display: grid;
   gap: var(--wa-space-2);
-  font-size: var(--wa-text-sm);
-  color: var(--wa-text-muted);
-  line-height: var(--wa-leading-normal);
+  padding: var(--wa-space-3);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-radius-sm);
+  background: var(--wa-bg-soft);
 }
 
-.wa-einwurf__schritte strong { color: var(--wa-text); }
+.wa-einwurf__zeile {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-space-2);
+  flex-wrap: wrap;
+}
+
+.wa-einwurf__wann {
+  margin: 0;
+  font-size: var(--wa-text-sm);
+  color: var(--wa-text-muted);
+}
+
+.wa-einwurf__titel {
+  margin: 0 0 var(--wa-space-2);
+  font-size: var(--wa-text-sm);
+  color: var(--wa-text-muted);
+  font-weight: 600;
+}
+
+.wa-einwurf__liste {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--wa-space-2);
+}
+
+.wa-einwurf__eintrag {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wa-space-3);
+  flex-wrap: wrap;
+  padding-block: var(--wa-space-2);
+  border-block-start: 1px solid var(--wa-border);
+  font-size: var(--wa-text-sm);
+}
+
+.wa-einwurf__eintrag:first-child { border-block-start: 0; }
+
+.wa-einwurf__knoepfe {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-space-2);
+  flex-wrap: wrap;
+}
 
 /* Ausklappbare Hilfe, z.B. "wo finde ich meine FTP-Daten?" */
 .wa-help {

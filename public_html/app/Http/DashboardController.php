@@ -80,7 +80,7 @@ final class DashboardController
             'projects' => Db::all(
                 'SELECT p.*,
                         (SELECT COUNT(*) FROM project_pages WHERE project_id = p.id) AS page_count,
-                        (SELECT MAX(version) FROM builds WHERE project_id = p.id) AS build_version
+                        (SELECT COUNT(*) FROM site_versions WHERE project_id = p.id) AS stand_count
                  FROM projects p
                  ORDER BY p.updated_at DESC, p.id DESC
                  LIMIT 12'

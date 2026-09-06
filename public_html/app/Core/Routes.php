@@ -210,7 +210,13 @@ final class Routes
             $r->get($base . '/projekt/{id}/sections', 'ProjectController@sections');
             $r->get($base . '/projekt/{id}/domain', 'DomainController@show');
             $r->get($base . '/projekt/{id}/veroeffentlichen', 'DeployController@show');
-            $r->get($base . '/projekt/{id}/zip/{build}', 'DeployController@download');
+            // Die Staende einer Website.
+            //
+            // Ohne Nummer: der Stand, an dem gerade gearbeitet wird -
+            // frisch gepackt, in diesem Augenblick. Mit Nummer: ein
+            // aelterer, so wie er damals abgelegt wurde.
+            $r->get($base . '/projekt/{id}/stand', 'StandController@jetzt');
+            $r->get($base . '/projekt/{id}/stand/{stand}', 'StandController@aelter');
             // Das Vorschaubild in den Listen. Hinter der Anmeldung und
             // ohne ablaufendes Kennwort - anders als die Vorschau, die
             // nach einem Tag erlischt und dann ein leeres Bild ergaebe.
@@ -273,13 +279,14 @@ final class Routes
             $r->post($base . '/projekt/{id}/bauen', 'ProjectController@rebuild');
             $r->post($base . '/projekt/{id}/loeschen', 'ProjectController@destroy');
             $r->post($base . '/projekt/{id}/support-schluessel', 'ProjectController@newSupportKeys');
-            $r->post($base . '/projekt/{id}/zip', 'DeployController@createZip');
             // Der Stand vom Kunden herein. Von hier aus geht nichts
             // mehr hinaus: Drei Wege zum Kundenserver waren
             // durchgemessen und alle drei tot. Uebertragen wird von
             // Hand, mit einem FTP-Programm - WebAtze packt aus, laesst
             // bearbeiten und packt wieder ein.
             $r->post($base . '/projekt/{id}/uebernehmen', 'DeployController@uebernehmen');
+            $r->post($base . '/projekt/{id}/stand/{stand}/wiederherstellen',
+                'StandController@wiederherstellen');
             // Die Zugangsdaten bleiben - zum Nachschlagen, nicht zum
             // Verbinden.
             $r->post($base . '/projekt/{id}/ftp', 'DeployController@saveTarget');

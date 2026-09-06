@@ -558,7 +558,18 @@ function initTableLabels() {
 function initDialogs() {
   document.querySelectorAll('[data-dialog]').forEach((button) => {
     button.addEventListener('click', (event) => {
-      const ziel = document.querySelector(button.dataset.dialog);
+      // Mit und ohne Raute.
+      //
+      // Zwei Ansichten schrieben "#tresor-3", eine schrieb "tresor-3" -
+      // und die suchte damit nach einem Element namens <tresor-3>, fand
+      // nichts und tat nichts. Kein Fehler in der Konsole, kein
+      // Fenster: Der Knopf sah aus wie immer und war tot. Genau dieser
+      // Knopf war "Website editieren".
+      const wahl = (button.dataset.dialog || '').trim();
+      const ziel = wahl === ''
+        ? null
+        : document.querySelector(/^[A-Za-z][\w-]*$/.test(wahl) ? '#' + wahl : wahl);
+
       if (!ziel) return;
 
       event.preventDefault();

@@ -11,7 +11,7 @@ use WebAtze\Domain\Brief;
 use WebAtze\Templates\{Catalog, Schema};
 
 /** @var array $project @var array $brief @var array $theme @var array|null $job */
-/** @var array $pages @var array $builds @var array|null $target @var array|null $transfer */
+/** @var array $pages @var array|null $target @var array|null $transfer */
 /** @var int $cost @var string $previewUrl */
 
 $base = '/' . trim((string) Config::get('create_path', 'create'), '/');
@@ -27,11 +27,13 @@ $statusLabels = [
 [$statusLabel, $statusTone] = $statusLabels[(string) $project['status']]
     ?? [(string) $project['status'], 'waiting'];
 
+/* Nur die Auftragsarten, die es noch gibt. "deploy" und "zip" standen
+   hier, nachdem beide gestrichen waren - eine Beschriftung fuer etwas,
+   das nie mehr auftaucht. */
 $jobLabels = [
     'generate' => 'Website wird gebaut',
     'rebuild' => 'Website wird neu gebaut',
-    'deploy' => 'Website wird hochgeladen',
-    'zip' => 'Paket wird geschnürt',
+    'zip-uebernehmen' => 'Das Archiv wird ausgepackt',
 ];
 
 $sectionCount = 0;
@@ -40,7 +42,7 @@ foreach ($pages as $page) {
 }
 
 $colours = $theme['colors'] ?? [];
-$latestBuild = $builds[0] ?? null;
+$staende = \WebAtze\Build\Staende::liste($id);
 ?>
 
 <div class="wa-page-head">
@@ -141,8 +143,8 @@ $latestBuild = $builds[0] ?? null;
         <span class="wa-stat__label">Abschnitte</span>
     </div>
     <div class="wa-stat">
-        <span class="wa-stat__value"><?= $latestBuild ? 'v' . (int) $latestBuild['version'] : '–' ?></span>
-        <span class="wa-stat__label">Paket</span>
+        <span class="wa-stat__value"><?= count($staende) ?: '–' ?></span>
+        <span class="wa-stat__label">Stände</span>
     </div>
     <div class="wa-stat">
         <span class="wa-stat__value">$<?= number_format($cost / 1e6, 2) ?></span>
@@ -198,45 +200,29 @@ $latestBuild = $builds[0] ?? null;
     <?php endif; ?>
 </section>
 
-<?php /* ------------------------------------------------------------- Pakete */ ?>
+<?php /* ---------------------------------------------------- Herunterladen */ ?>
 <section class="wa-panel">
     <div class="wa-panel__head">
-        <h2 class="wa-panel__title">Pakete</h2>
-        <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/zip">
-            <?= Csrf::field() ?>
-            <button type="submit" class="wa-btn wa-btn--sm">Neues Paket erstellen</button>
-        </form>
+        <h2 class="wa-panel__title">Website herunterladen</h2>
+        <p class="wa-panel__hint">
+            Ein ZIP mit dem Stand, der jetzt hier liegt &ndash; in diesem Augenblick
+            gepackt. Damit lädst du die Website mit deinem FTP-Programm beim Kunden
+            hinauf.
+        </p>
     </div>
 
-    <?php if ($builds === []): ?>
-        <div class="wa-empty-state">
-            <p>Noch kein Paket. Es entsteht automatisch, sobald die Website fertig gebaut ist.</p>
-        </div>
-    <?php else: ?>
-        <div class="wa-table-wrap">
-            <table class="wa-table">
-                <thead>
-                    <tr><th>Version</th><th>Dateien</th><th>Grösse</th><th>Erstellt</th><th></th></tr>
-                </thead>
-                <tbody>
-                <?php foreach ($builds as $build): ?>
-                    <tr>
-                        <td>v<?= (int) $build['version'] ?></td>
-                        <td><?= (int) $build['files_count'] ?></td>
-                        <td><?= e(format_bytes((int) $build['zip_bytes'])) ?></td>
-                        <td><?= e(date('d.m.Y H:i', strtotime((string) $build['created_at']))) ?></td>
-                        <td class="wa-table__right">
-                            <a class="wa-btn wa-btn--quiet wa-btn--sm"
-                               href="<?= e($base) ?>/projekt/<?= $id ?>/zip/<?= (int) $build['id'] ?>">
-                                Herunterladen
-                            </a>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-    <?php endif; ?>
+    <?php
+    /* Hier stand eine Tabelle mit Paketen und Versionsnummern. Sie war
+       genau der Fehler: Der Knopf zeigte auf ein Archiv, das dalag,
+       nicht auf das, was auf dem Bildschirm stand - und nach einer
+       Uebernahme war das ausgerechnet die unbearbeitete Fassung. Jetzt
+       gibt es einen Knopf, und der packt frisch. */
+    ?>
+    <div class="wa-form__actions">
+        <a class="wa-btn wa-btn--primary" href="<?= e($base) ?>/projekt/<?= $id ?>/stand">
+            Website herunterladen
+        </a>
+    </div>
 </section>
 
 <?php /* ------------------------------------------------------------ Bestellt */ ?>

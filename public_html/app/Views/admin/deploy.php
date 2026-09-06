@@ -1,16 +1,17 @@
 <?php
 /**
- * Veröffentlichen: Stand hereinholen, Paket herausgeben.
+ * Veröffentlichen: das ZIP herein, das ZIP hinaus.
  *
- * Das Paket entsteht immer – auch dann, wenn kein FTP-Zugang hinterlegt
- * ist. Es ist der verlässliche Weg, eine fertige Website in die Hand zu
- * bekommen.
+ * Das Fenster in der Mitte ist dasselbe wie beim Kunden - dieselbe
+ * Datei, damit es nicht zwei Fassungen gibt, die auseinanderlaufen.
+ * Darunter die Zugangsdaten: zum Nachschlagen für FileZilla, nicht zum
+ * Verbinden. Von hier aus geht nichts mehr auf den Kundenserver.
  */
 
 use WebAtze\Core\{Config, Csrf};
 
-/** @var array $project @var array|null $target @var array $builds */
-/** @var array|null $job @var array $brief */
+/** @var array $project @var array|null $target */
+/** @var array|null $job @var array $brief @var bool $offen */
 
 $base = '/' . trim((string) Config::get('create_path', 'create'), '/');
 $id = (int) $project['id'];
@@ -24,14 +25,13 @@ $id = (int) $project['id'];
  */
 $protocol = (string) ($target['protocol'] ?? 'ftp');
 $port = (int) ($target['port'] ?? ($protocol === 'sftp' ? 22 : 21));
-$latest = $builds[0] ?? null;
 ?>
 
 <p class="wa-intro">
     Du holst, WebAtze arbeitet, du bringst. Die Website mit deinem FTP-Programm
-    herunterladen und hier als ZIP hochladen; bearbeiten und ansehen; das Paket
-    herunterladen und selbst wieder hinaufladen. Die Zugangsdaten dafür stehen
-    ganz unten &ndash; zum Nachschlagen.
+    herunterladen und hier als ZIP hochladen; bearbeiten; herunterladen und selbst
+    wieder hinaufladen. Die Zugangsdaten dafür stehen darunter &ndash; zum
+    Nachschlagen.
 </p>
 
 <?php if ($job !== null): ?>
@@ -39,7 +39,7 @@ $latest = $builds[0] ?? null;
         <div class="wa-panel__head"><h2 class="wa-panel__title">Läuft gerade</h2></div>
         <div class="wa-job" data-job-watch="<?= (int) $job['id'] ?>">
             <div class="wa-job__row">
-                <strong><?= (string) $job['type'] === 'zip-uebernehmen' ? 'Der Stand wird übernommen' : 'Auftrag läuft' ?></strong>
+                <strong><?= (string) $job['type'] === 'zip-uebernehmen' ? 'Das Archiv wird ausgepackt' : 'Auftrag läuft' ?></strong>
                 <span class="wa-job__value" data-job-label><?= (int) $job['progress'] ?>%</span>
             </div>
             <div class="wa-progress">
@@ -55,191 +55,33 @@ $latest = $builds[0] ?? null;
 
 <?php
 /**
- * Der Stand herein, das Paket hinaus.
+ * Dasselbe Fenster wie beim Kunden - buchstäblich dieselbe Datei.
  *
- * Von hier aus geht nichts mehr auf den Kundenserver. Drei Wege dorthin
- * waren durchgemessen und alle drei tot: FTP mit verworfener
- * Datenverbindung, eine Empfangsdatei über HTTPS, eine dauerhafte
- * Leseschnittstelle. Von einem Hosting zum anderen kommt nichts durch -
- * vom eigenen Rechner aus schon.
- *
- * Also die ehrliche Reihenfolge: Du holst, WebAtze arbeitet, du bringst.
+ * Hier standen vorher drei Abschnitte nebeneinander: Stand hereinholen,
+ * Website herausgeben, Pakete. Drei Orte für einen Handgriff, und die
+ * Knöpfe darin zeigten auf Unterschiedliches. Genau daraus wurde der
+ * Fehler, dass "Herunterladen" die unbearbeitete Fassung herausgab.
  */
-$uebernommen = (bool) ($uebernommen ?? false);
-$offen = (bool) ($offen ?? false);
-$neustes = $builds[0] ?? null;
 ?>
 <section class="wa-panel">
     <div class="wa-panel__head">
-        <h2 class="wa-panel__title">Stand vom Kunden hereinholen</h2>
-        <p class="wa-panel__hint">
-            Mit deinem FTP-Programm die Website herunterladen, hier als ZIP hochladen.
-            Sie wird ausgepackt; ist es eine von WebAtze gebaute Website, stehen ihre
-            Texte und Bilder danach im Editor &ndash; auch die, die der Kunde selbst
-            geändert hat.
+        <h2 class="wa-panel__title">Website bearbeiten</h2>
+    </div>
+
+    <?= View_partial('partials/website-einwurf', ['website' => $project, 'base' => $base]) ?>
+
+    <?php if ($offen ?? false): ?>
+        <p class="wa-note">
+            <span class="wa-badge wa-badge--warn">noch nicht heruntergeladen</span>
+            Seit dem letzten Herunterladen wurde hier etwas geändert. Beim Kunden
+            liegt es noch nicht.
         </p>
-    </div>
+    <?php endif; ?>
 
-    <div class="wa-note">
-        <div>
-            <?php if ($uebernommen): ?>
-                <span class="wa-badge wa-badge--ok">Stand liegt hier</span>
-                Ausgepackt und bereit. Ein neues Archiv ersetzt ihn.
-            <?php else: ?>
-                <span class="wa-badge">noch kein Stand</span>
-                Ohne hochgeladenes Archiv arbeitet der Editor mit dem, was hier gebaut wurde.
-            <?php endif; ?>
-        </div>
-    </div>
-
-    <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/uebernehmen"
-          enctype="multipart/form-data" class="wa-form">
-        <?= Csrf::field() ?>
-
-        <label class="wa-label" for="archiv">Archiv der Website (ZIP)</label>
-        <input class="wa-input" type="file" id="archiv" name="archiv"
-               accept=".zip,application/zip">
-        <span class="wa-label__hint">
-            Liegt alles in einem Ordner, wird der weggeschnitten. Höchstens
-            <?= (int) (\WebAtze\Http\DeployController::MAX_ARCHIV_BYTES / 1024 / 1024) ?>&nbsp;MB.
-        </span>
-
+    <?php if (\WebAtze\Domain\Websites::hatVorschau($project)): ?>
         <div class="wa-form__actions">
-            <button type="submit" class="wa-btn wa-btn--primary"
-                    data-confirm="Den Stand aus diesem Archiv übernehmen? Der bisherige Inhalt dieser Website wird ersetzt - eine Fassung bleibt erhalten.">
-                Übernehmen
-            </button>
-            <a class="wa-btn" href="<?= e($base) ?>/editor/<?= $id ?>">Editor öffnen</a>
-        </div>
-    </form>
-</section>
-
-<section class="wa-panel">
-    <div class="wa-panel__head">
-        <h2 class="wa-panel__title">Website herausgeben</h2>
-        <p class="wa-panel__hint">
-            Ein Paket schnüren, herunterladen, mit deinem FTP-Programm beim Kunden
-            hinaufladen. Das Paket enthält den gebauten Stand &ndash; und alles aus dem
-            übernommenen Archiv, was der Bau nicht selbst erzeugt.
-        </p>
-    </div>
-
-    <div class="wa-note">
-        <div>
-            <?php if ($offen): ?>
-                <span class="wa-badge wa-badge--warn">noch nicht heruntergeladen</span>
-                Seit dem letzten Herunterladen wurde hier etwas geändert. Beim Kunden
-                liegt es noch nicht.
-            <?php elseif ((string) ($project['downloaded_at'] ?? '') !== ''): ?>
-                <span class="wa-badge wa-badge--ok">draussen</span>
-                Zuletzt heruntergeladen am
-                <?= e(date('d.m.Y H:i', strtotime((string) $project['downloaded_at']))) ?>.
-            <?php else: ?>
-                <span class="wa-badge">noch nie heruntergeladen</span>
-            <?php endif; ?>
-        </div>
-    </div>
-
-    <div class="wa-form__actions">
-        <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/zip">
-            <?= Csrf::field() ?>
-            <button type="submit" class="wa-btn">Neues Paket erstellen</button>
-        </form>
-        <?php if ($neustes !== null): ?>
-            <a class="wa-btn wa-btn--primary"
-               href="<?= e($base) ?>/projekt/<?= $id ?>/zip/<?= (int) $neustes['id'] ?>">
-                Website herunterladen
-            </a>
-        <?php endif; ?>
-        <?php if (\WebAtze\Domain\Websites::hatVorschau($project)): ?>
             <a class="wa-btn wa-btn--quiet" target="_blank" rel="noopener"
                href="<?= e(\WebAtze\Build\Pipeline::previewUrl($project)) ?>">Vorschau ansehen</a>
-        <?php endif; ?>
-    </div>
-</section>
-
-<?php /* -------------------------------------------------------------- Pakete */ ?>
-<section class="wa-panel">
-    <div class="wa-panel__head">
-        <h2 class="wa-panel__title">Paket</h2>
-        <div class="wa-panel__actions">
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/zip">
-                <?= Csrf::field() ?>
-                <button type="submit" class="wa-btn wa-btn--sm">Neues Paket erstellen</button>
-            </form>
-        </div>
-    </div>
-
-    <?php
-    /**
-     * Eine hinzugefügte Website hat kein gebautes Paket – sie wurde ja
-     * nicht hier gebaut. Ihr zu sagen „muss zuerst gebaut werden" wäre
-     * ein Rat, den man nicht befolgen kann. Für sie ist FTP der Weg zum
-     * Herunterladen, nicht zum Hochladen, und genau das steht dann da.
-     */
-    $handgemacht = (string) ($project['source'] ?? '') === 'hand';
-    ?>
-    <?php if ($builds === [] && $handgemacht): ?>
-        <div class="wa-empty-state">
-            <p>
-                Diese Website wurde nicht hier gebaut, also gibt es kein Paket zum
-                Hochladen. Die Zugangsdaten unten sind trotzdem sinnvoll: Damit
-                lässt sich der <strong>aktuelle Stand vom Server holen</strong> &ndash;
-                als ZIP, mit allem, was inzwischen dort liegt.
-            </p>
-            <a class="wa-btn" href="<?= e($base) ?>/websites/<?= $id ?>">Zurück zur Website</a>
-        </div>
-    <?php elseif ($builds === []): ?>
-        <div class="wa-empty-state">
-            <p>Noch kein Paket vorhanden. Die Website muss zuerst gebaut werden.</p>
-            <a class="wa-btn" href="<?= e($base) ?>/projekt/<?= $id ?>">Zurück zum Projekt</a>
-        </div>
-    <?php else: ?>
-        <p class="wa-panel__hint">
-            Das Paket wird in <code>public_html</code> des Kunden entpackt und läuft sofort –
-            ohne Installation und ohne Kommandozeile. Ältere Versionen bleiben erhalten.
-            <br>
-            Ein <strong>Live-Stand</strong> ist etwas anderes: nicht das hier Gebaute, sondern
-            das, was in dem Moment tatsächlich auf dem Server lag – samt hochgeladener Bilder,
-            eingegangener Anfragen und im Backend geänderter Texte. Davon bleiben die letzten
-            <?= (int) \WebAtze\Build\ZipExporter::LIVE_BEHALTEN ?> liegen.
-        </p>
-        <div class="wa-table-wrap">
-            <table class="wa-table">
-                <thead>
-                    <tr><th>Version</th><th>Dateien</th><th>Grösse</th><th>Erstellt</th><th>Notiz</th><th></th></tr>
-                </thead>
-                <tbody>
-                <?php foreach ($builds as $build): ?>
-                    <tr>
-                        <td>
-                            <?php /* Version 0 heisst: nicht gebaut, sondern vom
-                                     Server geholt. Eine eigene Zaehlung waere
-                                     eine zweite Reihenfolge neben der gebauten,
-                                     und dann bedeutete "v3" zweierlei. */ ?>
-                            <?php if ((int) $build['version'] === 0): ?>
-                                <span class="wa-badge">Live-Stand</span>
-                            <?php else: ?>
-                                v<?= (int) $build['version'] ?>
-                                <?php if ($latest !== null && (int) $build['id'] === (int) $latest['id']): ?>
-                                    <span class="wa-badge wa-badge--done">aktuell</span>
-                                <?php endif; ?>
-                            <?php endif; ?>
-                        </td>
-                        <td><?= (int) $build['files_count'] ?></td>
-                        <td><?= e(format_bytes((int) $build['zip_bytes'])) ?></td>
-                        <td><?= e(date('d.m.Y H:i', strtotime((string) $build['created_at']))) ?></td>
-                        <td><?= e((string) $build['notes']) ?></td>
-                        <td class="wa-table__right">
-                            <a class="wa-btn wa-btn--quiet wa-btn--sm"
-                               href="<?= e($base) ?>/projekt/<?= $id ?>/zip/<?= (int) $build['id'] ?>">
-                                Herunterladen
-                            </a>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
         </div>
     <?php endif; ?>
 </section>

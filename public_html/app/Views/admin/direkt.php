@@ -9,15 +9,21 @@
  * ohne eine Spur der Bearbeitung.
  *
  * @var array $projekt @var list<string> $seiten @var string $seite
- * @var array $pakete @var bool $offen
+ * @var bool $offen @var array|null $stand
  */
 
 use WebAtze\Core\{Assets, Config, Csrf};
 
 $base = '/' . trim((string) Config::get('create_path', 'create'), '/');
 $id = (int) $projekt['id'];
-$neustes = ($pakete ?? [])[0] ?? null;
 $hatSeiten = ($seiten ?? []) !== [];
+$gespeichert = (string) (($stand ?? [])['saved_at'] ?? '');
+
+/* Zurueck dorthin, wo das Fenster aufgeht: zum Kunden. Von der
+   Veroeffentlichen-Seite kam man hierher nicht mehr - dort steht das
+   Archiv-Feld gar nicht mehr. */
+$kunde = (int) ($projekt['customer_id'] ?? 0);
+$zurueck = $kunde > 0 ? $base . '/kunden/' . $kunde : $base . '/websites';
 
 $daten = json_out([
     'id' => $id,
@@ -34,7 +40,7 @@ $daten = json_out([
     <div class="wa-direkt__leiste">
         <div class="wa-direkt__gruppe">
             <a class="wa-btn wa-btn--quiet wa-btn--sm"
-               href="<?= e($base) ?>/projekt/<?= $id ?>/veroeffentlichen">← Zurück</a>
+               href="<?= e($zurueck) ?>">← Zurück</a>
             <strong class="wa-direkt__name"><?= e((string) $projekt['name']) ?></strong>
 
             <?php if ($hatSeiten): ?>
@@ -53,23 +59,26 @@ $daten = json_out([
             <?php /* Der Zustand ist die halbe Auskunft: Wer nicht sieht,
                      dass etwas offen ist, speichert nicht - und
                      wundert sich, dass der Kunde nichts merkt. */ ?>
-            <span class="wa-direkt__stand" data-direkt-stand>bereit</span>
+            <span class="wa-direkt__stand" data-direkt-stand><?=
+                $gespeichert !== ''
+                    ? e('gespeichert ' . date('d.m.Y H:i', strtotime($gespeichert)))
+                    : 'bereit'
+            ?></span>
 
             <button type="button" class="wa-btn wa-btn--sm" data-direkt-speichern disabled>
                 Speichern
             </button>
 
-            <?php if ($neustes !== null): ?>
-                <a class="wa-btn wa-btn--primary wa-btn--sm"
-                   href="<?= e($base) ?>/projekt/<?= $id ?>/zip/<?= (int) $neustes['id'] ?>"
-                   data-direkt-holen>Website herunterladen</a>
-            <?php endif; ?>
-
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/zip"
-                  class="wa-direkt__form">
-                <?= Csrf::field() ?>
-                <button type="submit" class="wa-btn wa-btn--sm">Neues Paket</button>
-            </form>
+            <?php /* Ohne Nummer, und das ist der ganze Unterschied: Der
+                     Knopf zeigte frueher auf das zuletzt abgelegte
+                     Archiv - nach einer Uebernahme also auf das gerade
+                     hochgeladene. Wer eine Ueberschrift aenderte,
+                     speicherte und herunterlud, bekam die Seite von
+                     vorher zurueck. Jetzt wird bei jedem Klick frisch
+                     gepackt, aus dem Ordner, in dem gearbeitet wird. */ ?>
+            <a class="wa-btn wa-btn--primary wa-btn--sm"
+               href="<?= e($base) ?>/projekt/<?= $id ?>/stand"
+               data-direkt-holen>Website herunterladen</a>
         </div>
     </div>
 
@@ -82,8 +91,7 @@ $daten = json_out([
                     deinem FTP-Programm vom Hosting des Kunden geholt hast. Danach steht
                     die Seite hier und lässt sich Wort für Wort bearbeiten.
                 </p>
-                <a class="wa-btn wa-btn--primary"
-                   href="<?= e($base) ?>/projekt/<?= $id ?>/veroeffentlichen">
+                <a class="wa-btn wa-btn--primary" href="<?= e($zurueck) ?>">
                     Archiv hochladen
                 </a>
             </div>
@@ -92,7 +100,7 @@ $daten = json_out([
         <div class="wa-direkt__hinweis" data-direkt-hinweis>
             <strong>Text ändern:</strong> anklicken und schreiben.
             <strong>Bild tauschen:</strong> auf das Bild klicken.
-            Danach speichern und das Paket herunterladen.
+            Danach speichern und die Website herunterladen.
         </div>
 
         <div class="wa-direkt__buehne">

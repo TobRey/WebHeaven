@@ -31,12 +31,10 @@ $base = '/' . trim((string) Config::get('create_path', 'create'), '/');
  *
  * Übertragen wird von Hand: Du holst die Website mit deinem
  * FTP-Programm herunter, lädst sie hier hoch, bearbeitest sie, lädst
- * das Paket herunter und bringst es zurück. Deshalb steht beides hier
+ * sie wieder herunter und bringst sie zurück. Deshalb steht beides hier
  * oben - der Weg herein und der Weg hinaus, an der Stelle, an der
  * gearbeitet wird.
  */
-$pakete = (array) ($pakete ?? []);
-$neustes = $pakete[0] ?? null;
 $offen = (bool) ($offen ?? false);
 ?>
 <div class="wa-editor" data-editor>
@@ -64,17 +62,14 @@ $offen = (bool) ($offen ?? false);
                 </form>
             </details>
 
-            <?php if ($neustes !== null): ?>
-                <a class="wa-btn wa-btn--sm"
-                   href="<?= e($base) ?>/projekt/<?= (int) $projekt['id'] ?>/zip/<?= (int) $neustes['id'] ?>">
-                    Website herunterladen
-                </a>
-            <?php else: ?>
-                <a class="wa-btn wa-btn--sm"
-                   href="<?= e($base) ?>/projekt/<?= (int) $projekt['id'] ?>/veroeffentlichen">
-                    Paket erstellen
-                </a>
-            <?php endif; ?>
+            <?php /* Ohne Nummer: gepackt wird in diesem Augenblick, aus dem
+                     Ordner, in dem gearbeitet wird. Vorher zeigte der Knopf
+                     auf das zuletzt abgelegte Archiv - nach einer Uebernahme
+                     also auf die unbearbeitete Fassung. */ ?>
+            <a class="wa-btn wa-btn--sm"
+               href="<?= e($base) ?>/projekt/<?= (int) $projekt['id'] ?>/stand">
+                Website herunterladen
+            </a>
         </div>
     </div>
 

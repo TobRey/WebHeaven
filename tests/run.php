@@ -2081,10 +2081,237 @@ test('Eine erzeugte Website ist ab dem ersten Moment bearbeitbar', function (): 
 });
 
 // ==================================================================
-test('Live-Staende raeumen sich selbst auf', function (): void {
-    // Ein Live-Stand ist so gross wie die ganze Website, und niemand
-    // denkt daran, ihn zu loeschen. Ohne diese Grenze fuellt ein
-    // wiederholter Knopfdruck das Hosting-Konto.
+test('Kein Knopf zeigt mehr auf ein abgelegtes Archiv', function (): void {
+    // Die Ursache des Fehlers war eine Adresse mit einer Nummer darin:
+    // /projekt/7/zip/41 - und 41 war der zuletzt eingetragene Eintrag,
+    // nicht der Stand auf dem Bildschirm. Solche Adressen darf es nicht
+    // mehr geben, sonst kommt der Fehler auf einem anderen Weg zurueck.
+    $ordner = dirname(__DIR__) . '/public_html/app/Views';
+    $treffer = [];
+
+    $dateien = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($ordner, FilesystemIterator::SKIP_DOTS)
+    );
+
+    foreach ($dateien as $datei) {
+        /** @var SplFileInfo $datei */
+        if (!$datei->isFile() || $datei->getExtension() !== 'php') {
+            continue;
+        }
+
+        $inhalt = (string) file_get_contents($datei->getPathname());
+
+        if (preg_match('~/zip/~', $inhalt) === 1) {
+            $treffer[] = $datei->getFilename();
+        }
+    }
+
+    is([], $treffer, 'Keine Ansicht verlinkt noch ein einzelnes Paket');
+
+    // Und die Route dazu ist auch weg - sonst waere sie bloss unsichtbar.
+    $routen = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Core/Routes.php');
+
+    ok(!str_contains($routen, "/zip/{build}"), 'Die Paket-Route gibt es nicht mehr');
+    ok(str_contains($routen, "'/projekt/{id}/stand', 'StandController@jetzt'"),
+        'Stattdessen eine ohne Nummer, die frisch packt');
+    ok(str_contains($routen, "'/projekt/{id}/stand/{stand}/wiederherstellen'"),
+        'Und eine zum Wiederherstellen');
+});
+
+// ==================================================================
+test('Jeder Fensterknopf trifft sein Fenster', function (): void {
+    // "Website editieren" tat gar nichts. Der Knopf trug
+    // data-dialog="bearbeiten-1", zwei andere Ansichten schrieben
+    // "#tresor-3" - und querySelector('bearbeiten-1') sucht nach einem
+    // Element namens <bearbeiten-1>. Kein Fehler in der Konsole, kein
+    // Fenster, kein Hinweis: der Knopf sah aus wie immer und war tot.
+    $ordner = dirname(__DIR__) . '/public_html/app/Views';
+    $knoepfe = [];
+    $fenster = [];
+
+    $dateien = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($ordner, FilesystemIterator::SKIP_DOTS)
+    );
+
+    foreach ($dateien as $datei) {
+        /** @var SplFileInfo $datei */
+        if (!$datei->isFile() || $datei->getExtension() !== 'php') {
+            continue;
+        }
+
+        $inhalt = (string) file_get_contents($datei->getPathname());
+
+        preg_match_all('~data-dialog="([^"]*)"~', $inhalt, $treffer);
+
+        foreach ($treffer[1] as $wahl) {
+            $knoepfe[] = [$datei->getFilename(), $wahl];
+        }
+
+        preg_match_all('~<dialog[^>]*\sid="([^"]*)"~', $inhalt, $ids);
+        $fenster = array_merge($fenster, $ids[1]);
+    }
+
+    ok($knoepfe !== [], 'Es gibt Knoepfe, die Fenster oeffnen');
+
+    // Jede Angabe muss ein gueltiger Selektor sein - also mit Raute,
+    // wenn eine Kennung gemeint ist.
+    $ohne = array_values(array_filter(
+        $knoepfe,
+        static fn (array $k): bool => !str_starts_with($k[1], '#') && !str_starts_with($k[1], '.')
+    ));
+
+    is([], $ohne, 'Keiner sucht nach einem Element, das es als Element nicht gibt');
+
+    // Und der Fallback im Skript faengt es ab, falls doch einer
+    // durchrutscht - stumm ist die schlechteste Art zu scheitern.
+    $skript = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/admin/admin.js');
+
+    ok(str_contains($skript, "'#' + wahl"), 'Das Skript ergaenzt eine fehlende Raute selbst');
+});
+
+// ==================================================================
+test('Das Fenster zeigt genau zwei Dinge', function (): void {
+    // "Es soll so super simpel gebaut sein, dass jeder Idiot es
+    // versteht." Hier stand vorher eine Anleitung in drei Schritten,
+    // darunter Pakete mit Versionsnummern. Was bleibt: ein Feld und
+    // eine Liste.
+    $datei = dirname(__DIR__) . '/public_html/app/Views/partials/website-einwurf.php';
+    $inhalt = (string) file_get_contents($datei);
+
+    ok(str_contains($inhalt, 'name="archiv"'), 'Oben ein Feld fuer das ZIP');
+    ok(str_contains($inhalt, "/stand/<?= (int) \$alt['id'] ?>/wiederherstellen"),
+        'Darunter Wiederherstellen je Stand');
+    ok(str_contains($inhalt, 'Zuletzt gespeichert am'), 'Mit Datum und Uhrzeit');
+    ok(!str_contains($inhalt, 'wa-einwurf__schritte'), 'Die Anleitung ist weg');
+
+    // Ab hier die Ausgabe, ohne den Kopfkommentar: Der darf erklaeren,
+    // was frueher hier stand, die Seite selbst nicht mehr davon reden.
+    $sichtbar = substr($inhalt, (int) strpos($inhalt, "\n?>\n"));
+
+    ok(!str_contains($sichtbar, 'Paket'), 'Und das Wort "Paket" kommt nicht mehr vor');
+    ok(!str_contains($sichtbar, 'Version'), 'Von Versionen ist auch keine Rede mehr');
+
+    // Ein Formular, das etwas veraendert, ohne Nachweis - das waere die
+    // Stelle, an der ein fremder Tab fuer den Angemeldeten aufraeumt.
+    is(2, substr_count($inhalt, 'Csrf::field()'), 'Beide Formulare tragen den Nachweis');
+});
+
+// ==================================================================
+test('Herunterladen gibt heraus, was gespeichert wurde', function (): void {
+    // Der Fehler, um den es geht: Nach dem Hochladen eines Archivs zeigte
+    // "Website herunterladen" auf den zuletzt abgelegten Eintrag - und
+    // das war ausgerechnet das gerade hochgeladene, unbearbeitete
+    // Archiv. Wer eine Ueberschrift aenderte, speicherte und
+    // herunterlud, bekam die Seite von vorher zurueck und musste
+    // glauben, das Speichern sei kaputt.
+    //
+    // Diese Pruefung geht den ganzen Weg: hochladen, aendern, packen,
+    // hineinschauen.
+    $id = (int) \WebAtze\Core\Db::insert('projects', [
+        'name' => 'Rundlauf', 'slug' => 'rundlauf-' . bin2hex(random_bytes(4)),
+        'status' => 'ready', 'brief' => '{}', 'theme' => '{}',
+        'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
+    ]);
+
+    $projekt = \WebAtze\Core\Db::first('SELECT * FROM projects WHERE id = :id', ['id' => $id]);
+    $slug = (string) $projekt['slug'];
+
+    $bauen = static function (array $eintraege): string {
+        $pfad = sys_get_temp_dir() . '/wa-stand-' . bin2hex(random_bytes(6)) . '.zip';
+        $zip = new ZipArchive();
+        $zip->open($pfad, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+
+        foreach ($eintraege as $name => $inhalt) {
+            $zip->addFromString($name, $inhalt);
+        }
+
+        $zip->close();
+
+        return $pfad;
+    };
+
+    /** Was in einem Archiv unter diesem Namen steht. */
+    $lesen = static function (string $zipPfad, string $name): ?string {
+        $zip = new ZipArchive();
+
+        if ($zip->open($zipPfad) !== true) {
+            return null;
+        }
+
+        $inhalt = $zip->getFromName($name);
+        $zip->close();
+
+        return $inhalt === false ? null : $inhalt;
+    };
+
+    $hoch = $bauen(['index.html' => '<h1>Alt</h1>']);
+
+    try {
+        $auf = \WebAtze\Build\Staende::aufnehmen($projekt, $hoch, 'Vom Hosting des Kunden');
+
+        ok($auf['ok'], 'Das Archiv wird aufgenommen: ' . $auf['error']);
+        is(1, $auf['files'], 'Mit einer Datei');
+
+        $aktiv = \WebAtze\Build\Staende::aktiver($id);
+
+        ok($aktiv !== null && (int) $aktiv['id'] === $auf['id'], 'Und ist danach der aktive Stand');
+        ok((string) ($aktiv['saved_at'] ?? '') === '', 'Gespeichert wurde daran noch nichts');
+
+        // Jetzt der Handgriff, der vorher folgenlos blieb.
+        $ordner = \WebAtze\Build\Uebernahme::ordner($projekt);
+        file_put_contents($ordner . '/index.html', '<h1>Neu</h1>');
+        \WebAtze\Build\Staende::gespeichert($id);
+
+        $nachher = \WebAtze\Build\Staende::aktiver($id);
+
+        ok((string) ($nachher['saved_at'] ?? '') !== '', 'Nach dem Speichern steht ein Zeitpunkt da');
+
+        // Und der Knopf, der es herausgeben soll.
+        $paket = \WebAtze\Build\Staende::jetztPacken($projekt);
+
+        ok($paket !== null, 'Es wird gepackt');
+        is('<h1>Neu</h1>', $lesen((string) $paket, 'index.html'),
+            'Heruntergeladen kommt die geaenderte Seite - nicht die hochgeladene');
+
+        // Und der Beweis, dass nicht das abgelegte Archiv benutzt wird:
+        // Das enthaelt naemlich noch die alte Fassung.
+        $abgelegt = \WebAtze\Build\Staende::pfad((array) $aktiv);
+
+        is('<h1>Alt</h1>', $lesen((string) $abgelegt, 'index.html'),
+            'Das abgelegte Archiv ist unveraendert - genau deshalb wird es nicht ausgeliefert');
+
+        @unlink((string) $paket);
+
+        // Wiederherstellen: Der alte Stand kommt zurueck, und was gerade
+        // im Ordner lag, geht dabei nicht verloren.
+        $zurueck = \WebAtze\Build\Staende::wiederherstellen($projekt, $auf['id']);
+
+        ok($zurueck['ok'], 'Wiederherstellen geht: ' . $zurueck['error']);
+        is('<h1>Alt</h1>', (string) file_get_contents($ordner . '/index.html'),
+            'Danach liegt die alte Fassung wieder im Ordner');
+
+        $gesichert = \WebAtze\Core\Db::first(
+            'SELECT * FROM site_versions WHERE project_id = :p AND note = :n ORDER BY id DESC',
+            ['p' => $id, 'n' => 'Vor dem Wiederherstellen gesichert']
+        );
+
+        ok($gesichert !== null, 'Der Stand von vorher wurde vorher gesichert');
+        is('<h1>Neu</h1>', $lesen((string) \WebAtze\Build\Staende::pfad((array) $gesichert), 'index.html'),
+            'Und zwar mit der Arbeit darin - Wiederherstellen ist keine Falle');
+    } finally {
+        @unlink($hoch);
+        delete_tree(STORAGE_DIR . '/projects/' . $slug);
+        delete_tree(STORAGE_DIR . '/zips/' . $slug);
+        \WebAtze\Core\Db::delete('site_versions', 'project_id = :p', ['p' => $id]);
+        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
+    }
+});
+
+// ==================================================================
+test('Alte Staende raeumen sich selbst auf', function (): void {
+    // Ein Stand ist so gross wie die ganze Website, und niemand denkt
+    // daran, ihn zu loeschen. Ohne diese Grenze fuellt ein Nachmittag
+    // Arbeit das Hosting-Konto.
     $projektId = (int) \WebAtze\Core\Db::insert('projects', [
         'name' => 'Aufraeumen', 'slug' => 'aufraeumen-' . bin2hex(random_bytes(4)),
         'status' => 'ready', 'created_at' => \WebAtze\Core\Db::now(),
@@ -2096,56 +2323,49 @@ test('Live-Staende raeumen sich selbst auf', function (): void {
     $ordner = STORAGE_DIR . '/zips/' . $slug;
     @mkdir($ordner, 0755, true);
 
-    // Fuenf Live-Staende und ein gebautes Paket dazwischen.
+    // Einer mehr als die Grenze, damit genau einer wegfaellt - und
+    // einer davon aktiv, denn der darf unter keinen Umstaenden gehen.
+    $behalten = \WebAtze\Build\Staende::BEHALTEN;
+    $anzahl = $behalten + 2;
     $dateien = [];
 
-    for ($i = 1; $i <= 5; $i++) {
-        $name = $slug . '/' . $slug . '-live-' . $i . '.zip';
+    for ($i = 1; $i <= $anzahl; $i++) {
+        $name = $slug . '/' . $slug . '-stand-' . $i . '.zip';
         file_put_contents(STORAGE_DIR . '/zips/' . $name, 'x');
         $dateien[$i] = STORAGE_DIR . '/zips/' . $name;
 
-        \WebAtze\Core\Db::insert('builds', [
-            'project_id' => $projektId, 'version' => 0, 'zip_path' => $name,
-            'zip_bytes' => 1, 'files_count' => 1, 'notes' => 'Live-Stand vom Server',
+        \WebAtze\Core\Db::insert('site_versions', [
+            'project_id' => $projektId, 'note' => 'Stand ' . $i,
+            'zip_path' => $name, 'zip_bytes' => 1, 'files_count' => 1,
+            'is_active' => $i === 1 ? 1 : 0,
             'created_at' => \WebAtze\Core\Db::now(),
         ]);
     }
 
-    $gebaut = $slug . '/' . $slug . '-v1-2026-01-01.zip';
-    file_put_contents(STORAGE_DIR . '/zips/' . $gebaut, 'x');
-
-    \WebAtze\Core\Db::insert('builds', [
-        'project_id' => $projektId, 'version' => 1, 'zip_path' => $gebaut,
-        'zip_bytes' => 1, 'files_count' => 1, 'notes' => '',
-        'created_at' => \WebAtze\Core\Db::now(),
-    ]);
-
-    $aufraeumen = new ReflectionMethod(\WebAtze\Build\ZipExporter::class, 'liveAufraeumen');
+    $aufraeumen = new ReflectionMethod(\WebAtze\Build\Staende::class, 'aufraeumen');
     $aufraeumen->setAccessible(true);
     $aufraeumen->invoke(null, $projektId, $slug);
 
     $uebrig = (int) \WebAtze\Core\Db::value(
-        'SELECT COUNT(*) FROM builds WHERE project_id = :p AND version = 0',
+        'SELECT COUNT(*) FROM site_versions WHERE project_id = :p AND is_active = 0',
         ['p' => $projektId],
         0
     );
 
-    is(\WebAtze\Build\ZipExporter::LIVE_BEHALTEN, $uebrig, 'Drei Live-Staende bleiben');
+    is($behalten, $uebrig, 'Zehn nicht-aktive Staende bleiben');
 
-    ok(is_file($dateien[5]) && is_file($dateien[4]) && is_file($dateien[3]),
+    ok(is_file($dateien[$anzahl]) && is_file($dateien[$anzahl - 1]),
         'Und zwar die neuesten');
-    ok(!is_file($dateien[1]) && !is_file($dateien[2]),
-        'Die aeltesten sind auch als Datei weg');
+    ok(!is_file($dateien[2]), 'Der aelteste nicht-aktive ist auch als Datei weg');
 
-    // Das gebaute Paket bleibt unberuehrt. Es ist der Beleg, dass die
-    // Website dem Kunden gehoert - das wegzuraeumen waere etwas
-    // anderes als aufraeumen.
+    // Der aktive Stand ist der, an dem gearbeitet wird. Ihn
+    // wegzuraeumen waere nicht aufraeumen, sondern loeschen.
     is(1, (int) \WebAtze\Core\Db::value(
-        'SELECT COUNT(*) FROM builds WHERE project_id = :p AND version > 0',
+        'SELECT COUNT(*) FROM site_versions WHERE project_id = :p AND is_active = 1',
         ['p' => $projektId],
         0
-    ), 'Das gebaute Paket bleibt');
-    ok(is_file(STORAGE_DIR . '/zips/' . $gebaut), 'Auch als Datei');
+    ), 'Der aktive Stand bleibt');
+    ok(is_file($dateien[1]), 'Auch als Datei');
 
     // Aufraeumen
     foreach (glob($ordner . '/*') ?: [] as $datei) {
@@ -2153,7 +2373,7 @@ test('Live-Staende raeumen sich selbst auf', function (): void {
     }
 
     @rmdir($ordner);
-    \WebAtze\Core\Db::delete('builds', 'project_id = :p', ['p' => $projektId]);
+    \WebAtze\Core\Db::delete('site_versions', 'project_id = :p', ['p' => $projektId]);
     \WebAtze\Core\Db::delete('projects', 'id = :p', ['p' => $projektId]);
 });
 

@@ -295,7 +295,7 @@ $tagName = static fn (string $tag): string =>
                 <thead>
                     <tr>
                         <th>Name</th><th>Status</th><th>Seiten</th>
-                        <th>Paket</th><th>Domain</th><th>Zuletzt</th>
+                        <th>Stände</th><th>Domain</th><th>Zuletzt</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -305,7 +305,7 @@ $tagName = static fn (string $tag): string =>
                         <td><a href="<?= e($base) ?>/projekt/<?= (int) $project['id'] ?>"><?= e((string) $project['name']) ?></a></td>
                         <td><span class="wa-badge wa-badge--<?= e($tone) ?>"><?= e($label) ?></span></td>
                         <td><?= (int) $project['page_count'] ?></td>
-                        <td><?= $project['build_version'] ? 'v' . (int) $project['build_version'] : '–' ?></td>
+                        <td><?= (int) $project['stand_count'] ?: '–' ?></td>
                         <td><?= $project['domain'] !== '' ? e((string) $project['domain']) : '–' ?></td>
                         <td><?= e(date('d.m.Y H:i', strtotime((string) $project['updated_at']))) ?></td>
                     </tr>

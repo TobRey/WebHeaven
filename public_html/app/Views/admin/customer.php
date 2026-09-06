@@ -363,13 +363,15 @@ $neu = $id === 0;
                                 </a>
 
                                 <?php
-                                /* Der Anfang der Schleife: Archiv einwerfen,
-                                   bearbeiten, Paket herausnehmen. Vorher stand
-                                   hier "Stand als ZIP" und holte ihn über FTP -
-                                   der Weg ist gestrichen, weil er von einem
-                                   Hosting zum anderen nicht durchkommt. */ ?>
+                                /* Der ganze Weg in einem Fenster: ZIP einwerfen,
+                                   bearbeiten, herunterladen. Es enthaelt genau
+                                   zwei Dinge - das Feld und die Liste der
+                                   Staende. Die Raute vor der Kennung ist nicht
+                                   Zierde: Ohne sie sucht querySelector nach
+                                   einem Element namens <bearbeiten-1>, findet
+                                   nichts, und der Knopf tut stumm gar nichts. */ ?>
                                 <button type="button" class="wa-btn wa-btn--primary wa-btn--small"
-                                        data-dialog="bearbeiten-<?= (int) $w['id'] ?>">
+                                        data-dialog="#bearbeiten-<?= (int) $w['id'] ?>">
                                     Website editieren
                                 </button>
                             </td>

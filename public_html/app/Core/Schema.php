@@ -1231,6 +1231,27 @@ final class Schema
             '051_projects_downloaded_at' => '
                 ALTER TABLE projects ADD COLUMN downloaded_at {datetime} NULL;
             ',
+
+            // Die Staende einer Website.
+            //
+            // Ein Stand ist ein Archiv plus der Zeitpunkt, an dem
+            // zuletzt darin gespeichert wurde. Der aktive ist der, der
+            // gerade bearbeitet wird; die aelteren liegen daneben und
+            // lassen sich wieder aktiv setzen.
+            '052_site_versions' => '
+                CREATE TABLE IF NOT EXISTS site_versions (
+                    id {id},
+                    project_id {int} NOT NULL,
+                    note {string:120} NOT NULL DEFAULT \'\',
+                    zip_path {string:255} NOT NULL,
+                    zip_bytes {int} NOT NULL DEFAULT 0,
+                    files_count {int} NOT NULL DEFAULT 0,
+                    is_active {bool} NOT NULL DEFAULT 0,
+                    created_at {datetime} NOT NULL,
+                    saved_at {datetime} NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_versions_project ON site_versions (project_id, id);
+            ',
         ];
     }
 

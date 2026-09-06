@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WebAtze\Http;
 
-use WebAtze\Build\{Uebernahme, ZipExporter};
+use WebAtze\Build\{Staende, Uebernahme};
 use WebAtze\Core\{Audit, Config, Db, Request, Response, Session, View};
 
 /**
@@ -104,8 +104,8 @@ final class DirektController
                 'projekt' => $projekt,
                 'seiten' => $seiten,
                 'seite' => $gewaehlt,
-                'pakete' => ZipExporter::listFor((int) $projekt['id']),
                 'offen' => \WebAtze\Domain\Websites::offeneAenderung($projekt),
+                'stand' => Staende::aktiver((int) $projekt['id']),
             ]),
         ]))->noCache()->noIndex();
     }
@@ -194,6 +194,11 @@ final class DirektController
 
         // Damit die Liste weiss, dass etwas draussen noch fehlt.
         Db::update('projects', ['updated_at' => Db::now()], 'id = :id', ['id' => (int) $projekt['id']]);
+
+        // Und damit im Fenster steht, wann zuletzt gespeichert wurde.
+        // Das ist die Angabe, an der man erkennt, ob der Klick etwas
+        // bewirkt hat - ohne sie bleibt nur, es zu glauben.
+        Staende::gespeichert((int) $projekt['id']);
 
         Audit::log('direkt.gespeichert', (string) $projekt['name'], ['seite' => $pfad], $request);
 

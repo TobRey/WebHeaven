@@ -52,7 +52,6 @@ final class Pipeline
 
         match ($type) {
             'generate', 'rebuild' => self::generate($job, $budget),
-            'zip' => self::zipOnly($job),
             'zip-uebernehmen' => self::zipUebernehmen($job, $budget),
             default => throw new RuntimeException('Unbekannte Auftragsart: ' . $type),
         };
@@ -876,6 +875,9 @@ final class Pipeline
         $result = ZipExporter::create($project);
         $state['zip'] = $result;
 
+        // Und in die Liste der Staende, aus der heruntergeladen wird.
+        Staende::vermerken($project, $result['path'], 'Hier gebaut', (int) $result['files']);
+
         return $state;
     }
 
@@ -908,21 +910,6 @@ final class Pipeline
     // ==================================================================
     // Andere Auftragsarten
     // ==================================================================
-
-    private static function zipOnly(array $job): void
-    {
-        $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
-        if ($project === null) {
-            Jobs::fail($job['id'], 'Projekt nicht gefunden.', false);
-            return;
-        }
-
-        Jobs::progress($job['id'], 'zip', 50, 'Paket wird geschnürt …');
-        $result = ZipExporter::create($project);
-
-        Jobs::progress($job['id'], 'fertig', 100, 'Paket ist fertig.', ['zip' => $result]);
-        Jobs::finish($job['id'], sprintf('Paket erstellt (%s).', format_bytes((int) $result['bytes'])));
-    }
 
     /**
      * Den Stand vom Kunden uebernehmen.
@@ -959,38 +946,39 @@ final class Pipeline
 
         Jobs::progress($job['id'], 'auspacken', 15, 'Das Archiv wird ausgepackt …');
 
-        $aus = \WebAtze\Build\Uebernahme::auspacken($project, $zip);
+        // Auspacken und als neuen Stand eintragen, in einem Schritt.
+        //
+        // Beides zusammen und nicht nacheinander: Ein ausgepackter
+        // Ordner ohne Eintrag daneben waere ein Stand, den die Liste
+        // nicht kennt - und genau daran hing der Fehler, dass
+        // "Herunterladen" das falsche Archiv herausgab.
+        $stand = Staende::aufnehmen($project, $zip, 'Vom Hosting des Kunden');
+        @unlink($zip);
 
-        if (!$aus['ok']) {
-            @unlink($zip);
-            Jobs::fail($job['id'], $aus['error'], false);
+        if (!$stand['ok']) {
+            Jobs::fail($job['id'], $stand['error'], false);
 
             return;
         }
 
         Jobs::progress($job['id'], 'uebernehmen', 55, sprintf(
             '%d Dateien ausgepackt. Inhalte werden übernommen …',
-            $aus['files']
+            $stand['files']
         ));
 
         $inhalt = \WebAtze\Build\Uebernahme::inhalteUebernehmen($project);
 
-        // Das Archiv selbst bleibt als Stand liegen - es ist der Beweis,
-        // was beim Kunden lag, und der Weg zurueck, wenn die Uebernahme
-        // etwas verdorben hat.
-        ZipExporter::uebernahmeVermerken($project, $zip, $aus['files']);
-        @unlink($zip);
-
         if (!$inhalt['ok']) {
-            // Ausgepackt ist ausgepackt: ansehen und herunterladen geht,
-            // bearbeiten nicht. Das ist ein Ergebnis, kein Fehlschlag.
-            // Weiter zum Bearbeiten: Wer ein Archiv hochlaedt, will es
-        // bearbeiten. Die Oberflaeche folgt diesem Hinweis, sobald der
-        // Auftrag fertig ist.
-        Jobs::progress($job['id'], 'fertig', 100, 'Ausgepackt.', ['redirect' => self::zumBearbeiten($project)]);
+            // Ausgepackt ist ausgepackt: ansehen, bearbeiten und
+            // herunterladen geht - nur die Abschnitte in der Datenbank
+            // bleiben, wie sie waren. Das ist ein Ergebnis, kein
+            // Fehlschlag. Und weiter geht es dorthin, wo gearbeitet
+            // wird: Wer ein Archiv hochlaedt, will es bearbeiten.
+            Jobs::progress($job['id'], 'fertig', 100, 'Ausgepackt.',
+                ['redirect' => self::zumBearbeiten($project)]);
             Jobs::finish($job['id'], sprintf(
                 '%d Dateien übernommen. %s',
-                $aus['files'],
+                $stand['files'],
                 $inhalt['error']
             ));
 
@@ -1013,7 +1001,7 @@ final class Pipeline
             ['redirect' => self::zumBearbeiten($project)]);
         Jobs::finish($job['id'], sprintf(
             '%d Dateien übernommen, %d Seiten und %d Abschnitte eingelesen.%s',
-            $aus['files'],
+            $stand['files'],
             $inhalt['seiten'],
             $inhalt['abschnitte'],
             $inhalt['uebrig'] > 0
@@ -1023,7 +1011,7 @@ final class Pipeline
         ));
 
         Audit::log('project.uebernommen', (string) $project['name'], [
-            'dateien' => $aus['files'],
+            'dateien' => $stand['files'],
             'seiten' => $inhalt['seiten'],
         ]);
     }

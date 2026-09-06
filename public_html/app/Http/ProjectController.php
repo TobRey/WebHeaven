@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WebAtze\Http;
 
-use WebAtze\Build\{Pipeline, SiteBuilder, SiteChecker, ZipExporter};
+use WebAtze\Build\{Pipeline, SiteBuilder, SiteChecker};
 use WebAtze\Core\{Audit, Config, Db, Jobs, Request, Response, Session, View};
 use WebAtze\Domain\{PromptText, Visits, Websites};
 
@@ -106,7 +106,6 @@ final class ProjectController
 
         $job = Jobs::activeFor((int) $project['id']);
         $pages = SiteBuilder::loadPages((int) $project['id']);
-        $builds = ZipExporter::listFor((int) $project['id']);
 
         $target = Db::first(
             'SELECT * FROM deploy_targets WHERE project_id = :p ORDER BY id DESC LIMIT 1',
@@ -134,7 +133,6 @@ final class ProjectController
                 'theme' => $theme,
                 'job' => $job,
                 'pages' => $pages,
-                'builds' => $builds,
                 'target' => $target,
                 'transfer' => $transfer,
                 'cost' => $cost,
