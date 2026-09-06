@@ -22,7 +22,6 @@ $_SERVER['WEBATZE_TEST'] = '1';
 
 require __DIR__ . '/harness.php';
 require __DIR__ . '/seiten.php';
-require __DIR__ . '/empfaenger.php';
 require __DIR__ . '/../public_html/app/bootstrap.php';
 
 // Der Testlauf bekommt eine eigene, leere Datenbank.
@@ -1984,73 +1983,6 @@ test('Ein laufender Auftrag zeigt, dass er lebt', function (): void {
 });
 
 // ==================================================================
-test('Der Verbindungstest stuerzt nie ab', function (): void {
-    // Hier stand ein Aufruf von ftp_connect() ohne die Pruefung, ob es
-    // die FTP-Erweiterung auf diesem Server ueberhaupt gibt. Fehlt sie -
-    // auf geteiltem Hosting oft der Fall - ist das kein Fehler, den man
-    // abfangen kann, sondern ein Absturz: Fehler 500, ohne einen Hinweis
-    // worauf. In den anderen Methoden stand die Pruefung laengst.
-    // Seit dem Neubau steckt aller FTP-Code in einer einzigen Datei -
-    // die Wache muss also dorthin zeigen, wo er wirklich liegt.
-    $quelle = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Build/Ftp.php'
-    );
-
-    ok(!str_contains(
-        (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'),
-        'ftp_connect('
-    ), 'Die Fachschicht spricht kein FTP mehr selbst');
-
-    // Jeder Aufruf einer ftp_-Funktion braucht davor eine Pruefung.
-    $stellen = [];
-    foreach (explode("\n", $quelle) as $nummer => $zeile) {
-        if (preg_match('/(?<!function_exists\(.)ftp_(connect|ssl_connect)\(/', $zeile)) {
-            $stellen[] = $nummer + 1;
-        }
-    }
-
-    ok($stellen !== [], 'Es gibt Stellen, die FTP benutzen');
-
-    $zeilen = explode("\n", $quelle);
-
-    foreach ($stellen as $zeile) {
-        // In den 30 Zeilen davor muss die Pruefung stehen.
-        $davor = implode("\n", array_slice($zeilen, max(0, $zeile - 31), 30));
-
-        ok(str_contains($davor, "function_exists('ftp_connect')"),
-            'Vor Zeile ' . $zeile . ' wird geprueft, ob dieser Server FTP kann');
-    }
-
-    // Und der Test selbst muss ein Ergebnis liefern statt zu werfen -
-    // auch wenn dort nichts erreichbar ist.
-    $projectId = (int) \WebAtze\Core\Db::insert('projects', [
-        'name' => 'Uploadtest', 'slug' => 'upload-' . bin2hex(random_bytes(4)),
-        'status' => 'ready', 'created_at' => \WebAtze\Core\Db::now(),
-        'updated_at' => \WebAtze\Core\Db::now(),
-    ]);
-
-    foreach (['sftp' => 22, 'ftp' => 21] as $protokoll => $port) {
-        \WebAtze\Build\FtpDeployer::saveTarget($projectId, [
-            'protocol' => $protokoll,
-            'host' => '127.0.0.1',
-            'port' => 1,               // dort lauscht nichts
-            'username' => 'niemand',
-            'password' => 'auch-nicht',
-            'path' => '/public_html/preview',
-        ]);
-
-        $ergebnis = \WebAtze\Build\FtpDeployer::test($projectId);
-
-        is(false, $ergebnis['ok'], $protokoll . ': meldet sauber einen Fehlschlag');
-        ok(($ergebnis['message'] ?? '') !== '', $protokoll . ': und sagt auch, warum');
-        ok(array_key_exists('ordner', $ergebnis), $protokoll . ': die Antwort hat die erwartete Form');
-    }
-
-    \WebAtze\Core\Db::delete('deploy_targets', 'project_id = :p', ['p' => $projectId]);
-    \WebAtze\Core\Db::delete('projects', 'id = :p', ['p' => $projectId]);
-});
-
-// ==================================================================
 test('Eine erzeugte Website ist ab dem ersten Moment bearbeitbar', function (): void {
     // Das ist die Zusage, um die es geht: "von Anfang an kann man jede
     // Section bearbeiten". Bisher war das eine Hoffnung - der
@@ -2146,82 +2078,6 @@ test('Eine erzeugte Website ist ab dem ersten Moment bearbeitbar', function (): 
     \WebAtze\Core\Db::delete('project_sections', 'project_id = :p', ['p' => $projektId]);
     \WebAtze\Core\Db::delete('project_pages', 'project_id = :p', ['p' => $projektId]);
     \WebAtze\Core\Db::delete('projects', 'id = :p', ['p' => $projektId]);
-});
-
-// ==================================================================
-test('Der Live-Stand hat Grenzen und meldet, wenn er sie erreicht', function (): void {
-    // fetchDirectory() daneben war fuer die taegliche Sicherung
-    // gemacht: ueber FTP nicht rekursiv, ein leeres Ordnerargument
-    // abgelehnt, jeder Fehler ein stilles leeres Feld - von "der Ordner
-    // ist leer" nicht zu unterscheiden -, und alles im Speicher.
-    $darfWeiter = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'baumDarfWeiter');
-    $darfWeiter->setAccessible(true);
-
-    $neu = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'neuerStand');
-    $neu->setAccessible(true);
-
-    $stand = $neu->invoke(null);
-
-    ok($darfWeiter->invokeArgs(null, [&$stand, microtime(true) + 60]),
-        'Am Anfang ist Luft');
-
-    // Zu viele Dateien.
-    $stand = $neu->invoke(null);
-    $stand['files'] = 5000;
-
-    ok(!$darfWeiter->invokeArgs(null, [&$stand, microtime(true) + 60]),
-        'Bei 5000 Dateien ist Schluss');
-    ok($stand['abgeschnitten'], 'Und das wird vermerkt');
-
-    // Zu viele Bytes.
-    $stand = $neu->invoke(null);
-    $stand['bytes'] = 200 * 1024 * 1024;
-
-    ok(!$darfWeiter->invokeArgs(null, [&$stand, microtime(true) + 60]),
-        'Bei 200 MB ist Schluss');
-
-    // Zeit abgelaufen.
-    $stand = $neu->invoke(null);
-
-    ok(!$darfWeiter->invokeArgs(null, [&$stand, microtime(true) - 1]),
-        'Und wenn die Zeit um ist');
-    ok($stand['abgeschnitten'], 'Auch das wird vermerkt');
-
-    // Was uebergangen wird: Sicherungen einer Sicherung sind der
-    // klassische Weg, aus einer 20-MB-Website ein 400-MB-Archiv zu
-    // machen - mit denselben Daten dreimal darin.
-    $uebergehen = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'baumUebergehen');
-    $uebergehen->setAccessible(true);
-
-    ok($uebergehen->invoke(null, 'data/backups'), 'Sicherungen werden uebergangen');
-    ok($uebergehen->invoke(null, 'data/backups/2026-01-01.zip'), 'Und alles darin');
-    ok($uebergehen->invoke(null, '.git'), 'Die Versionsverwaltung auch');
-    ok($uebergehen->invoke(null, 'node_modules/foo/bar.js'), 'node_modules ebenfalls');
-    ok(!$uebergehen->invoke(null, 'data/site.php'), 'Die Daten des Kunden aber nicht');
-    ok(!$uebergehen->invoke(null, 'index.html'), 'Und die Website erst recht nicht');
-
-    // Ohne Zugangsdaten gibt es kein stilles Nichts, sondern eine
-    // Auskunft. Das war der eigentliche Fehler daran: Ein leeres Feld
-    // sah aus wie ein leerer Ordner.
-    if (class_exists(ZipArchive::class)) {
-        $pfad = sys_get_temp_dir() . '/wa-leer-' . bin2hex(random_bytes(4)) . '.zip';
-        $zip = new ZipArchive();
-        $zip->open($pfad, ZipArchive::CREATE | ZipArchive::OVERWRITE);
-
-        $ergebnis = \WebAtze\Build\FtpDeployer::fetchTree(
-            ['secret' => 'unlesbar', 'protocol' => 'ftp', 'host' => '127.0.0.1',
-             'port' => 1, 'username' => 'x', 'remote_path' => '/'],
-            $zip,
-            2.0
-        );
-
-        $zip->close();
-        @unlink($pfad);
-
-        is(false, $ergebnis['ok'], 'Ohne lesbare Zugangsdaten kein Erfolg');
-        ok($ergebnis['error'] !== '', 'Und eine Begruendung statt eines leeren Feldes');
-        is(0, $ergebnis['files'], 'Keine Dateien');
-    }
 });
 
 // ==================================================================
@@ -2943,7 +2799,7 @@ test('Ein Hosting-Zugang gilt fuer alle Websites', function (): void {
             'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
         ]);
 
-        \WebAtze\Build\FtpDeployer::saveTarget($ids[$nummer], [
+        \WebAtze\Build\Zugang::saveTarget($ids[$nummer], [
             'protocol' => 'ftp', 'host' => '', 'port' => 21,
             'username' => '', 'password' => '', 'path' => $pfad,
             'hosting_account_id' => $kontoId,
@@ -2951,16 +2807,16 @@ test('Ein Hosting-Zugang gilt fuer alle Websites', function (): void {
     }
 
     foreach ($ids as $nummer => $projektId) {
-        $ziel = \WebAtze\Build\FtpDeployer::targetFor($projektId);
+        $ziel = \WebAtze\Build\Zugang::targetFor($projektId);
 
         is('hosting.example', (string) $ziel['host'], 'Website ' . $nummer . ': Server aus dem Zugang');
         is('web@example.ch', (string) $ziel['username'], 'Website ' . $nummer . ': Benutzer aus dem Zugang');
         ok((string) $ziel['secret'] !== '', 'Website ' . $nummer . ': Passwort aus dem Zugang');
     }
 
-    is('/', (string) \WebAtze\Build\FtpDeployer::targetFor($ids[0])['remote_path'],
+    is('/', (string) \WebAtze\Build\Zugang::targetFor($ids[0])['remote_path'],
         'Das Verzeichnis bleibt bei der Website');
-    is('/public_html/zwei', (string) \WebAtze\Build\FtpDeployer::targetFor($ids[1])['remote_path'],
+    is('/public_html/zwei', (string) \WebAtze\Build\Zugang::targetFor($ids[1])['remote_path'],
         'Und zwar je Website ein anderes');
 
     is(2, \WebAtze\Domain\HostingAccount::usedBy($kontoId), 'Beide haengen daran');
@@ -2972,7 +2828,7 @@ test('Ein Hosting-Zugang gilt fuer alle Websites', function (): void {
     ], $kontoId);
 
     foreach ($ids as $nummer => $projektId) {
-        $ziel = \WebAtze\Build\FtpDeployer::targetFor($projektId);
+        $ziel = \WebAtze\Build\Zugang::targetFor($projektId);
 
         is('neu.example', (string) $ziel['host'], 'Website ' . $nummer . ': zieht mit');
         ok((string) $ziel['secret'] !== '', 'Website ' . $nummer . ': das Passwort bleibt');
@@ -2987,12 +2843,12 @@ test('Ein Hosting-Zugang gilt fuer alle Websites', function (): void {
         'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
     ]);
 
-    \WebAtze\Build\FtpDeployer::saveTarget($eigen, [
+    \WebAtze\Build\Zugang::saveTarget($eigen, [
         'protocol' => 'sftp', 'host' => 'eigener.example', 'port' => 22,
         'username' => 'nur-ich', 'password' => 'meins', 'path' => '/web',
     ]);
 
-    $ziel = \WebAtze\Build\FtpDeployer::targetFor($eigen);
+    $ziel = \WebAtze\Build\Zugang::targetFor($eigen);
 
     is('eigener.example', (string) $ziel['host'], 'Eigene Angaben bleiben eigene Angaben');
     is('nur-ich', (string) $ziel['username'], 'Auch der Benutzername');
@@ -3002,7 +2858,7 @@ test('Ein Hosting-Zugang gilt fuer alle Websites', function (): void {
     // betrifft.
     ok(\WebAtze\Domain\HostingAccount::remove($kontoId), 'Der Zugang laesst sich entfernen');
 
-    $ziel = \WebAtze\Build\FtpDeployer::targetFor($ids[0]);
+    $ziel = \WebAtze\Build\Zugang::targetFor($ids[0]);
 
     ok($ziel !== null, 'Das Ziel gibt es noch');
     is(0, (int) ($ziel['hosting_account_id'] ?? 0), 'Ohne Verweis auf ein Konto, das es nicht mehr gibt');
@@ -3053,7 +2909,7 @@ test('Der Servername wird zurechtgerueckt', function (): void {
     // In dieses Feld wird kopiert, und mitkopiert wird alles, was der
     // Anbieter drumherum anzeigt. Jedes Stueck davon ergab frueher
     // denselben roten Kasten, und keiner sagte warum.
-    $n = \WebAtze\Build\FtpDeployer::normalizeHost(...);
+    $n = \WebAtze\Build\Zugang::normalizeHost(...);
 
     is('beispiel.ch', $n('ftp://beispiel.ch', 21)['host'], 'Das Schema faellt weg');
     is('beispiel.ch', $n('https://beispiel.ch', 21)['host'], 'Auch ein falsches');
@@ -3089,7 +2945,7 @@ test('Der Servername wird zurechtgerueckt', function (): void {
         'updated_at' => \WebAtze\Core\Db::now(),
     ]);
 
-    \WebAtze\Build\FtpDeployer::saveTarget($projectId, [
+    \WebAtze\Build\Zugang::saveTarget($projectId, [
         'protocol' => 'ftp',
         'host' => 'ftp://beispiel.ch:2121/public_html',
         'port' => 21,
@@ -3111,233 +2967,313 @@ test('Der Servername wird zurechtgerueckt', function (): void {
 });
 
 // ==================================================================
-test('Der Test sagt, an welcher Stufe es haengt', function (): void {
-    // Frueher war das Ergebnis am Ende schlicht der Rueckgabewert von
-    // ftp_chdir(). Eine tadellose Anmeldung mit falschem Ordner sah
-    // damit exakt aus wie ein Server, den es nicht gibt - beides
-    // "fehlgeschlagen", beide Male dieselbe Ratlosigkeit.
-    $projectId = (int) \WebAtze\Core\Db::insert('projects', [
-        'name' => 'Stufen', 'slug' => 'stufen-' . bin2hex(random_bytes(4)),
-        'status' => 'ready', 'created_at' => \WebAtze\Core\Db::now(),
-        'updated_at' => \WebAtze\Core\Db::now(),
+test('Der Stand kommt als Archiv herein und geht als Archiv hinaus', function (): void {
+    // Drei Wege zum Kundenserver waren durchgemessen und alle drei tot.
+    // Also uebertraegt der Mensch, und WebAtze ist die Werkstatt
+    // dazwischen: auspacken, bearbeiten, einpacken. Diese Pruefung geht
+    // den ganzen Weg - denn er ist nur so viel wert wie seine
+    // Umkehrbarkeit.
+    $id = (int) \WebAtze\Core\Db::insert('projects', [
+        'name' => 'Rundgang', 'slug' => 'rundgang-' . bin2hex(random_bytes(4)),
+        'status' => 'ready', 'brief' => '{}', 'theme' => '{}',
+        'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
     ]);
 
-    // Einen Namen, den es sicher nicht gibt: Das ist der Fall, der in
-    // der Praxis auftrat ("ftp." vor eine cPanel-Domain geschrieben).
-    \WebAtze\Build\FtpDeployer::saveTarget($projectId, [
-        'protocol' => 'ftp',
-        'host' => 'ftp.example.invalid',
-        'port' => 21,
-        'username' => 'web@example.invalid',
-        'password' => 'geheim',
-        'path' => '/public_html/preview',
+    $projekt = \WebAtze\Core\Db::first('SELECT * FROM projects WHERE id = :id', ['id' => $id]);
+    $ordner = \WebAtze\Build\Uebernahme::ordner($projekt);
+
+    // Eine kleine Website mit zwei Seiten und drei Abschnitten.
+    $seiteId = (int) \WebAtze\Core\Db::insert('project_pages', [
+        'project_id' => $id, 'path' => '/', 'title' => 'Start',
+        'meta_description' => 'Die Startseite', 'sort_order' => 0, 'in_navigation' => 1,
+        'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
     ]);
 
-    $ergebnis = \WebAtze\Build\FtpDeployer::test($projectId);
+    foreach ([['hero', 'bild-rechts'], ['services', 'raster-3'], ['footer', 'vier-spalten']] as $platz => [$typ, $vorlage]) {
+        \WebAtze\Core\Db::insert('project_sections', [
+            'project_id' => $id, 'page_id' => $seiteId, 'type' => $typ,
+            'template_key' => $vorlage,
+            'content' => json_encode(['titel' => 'Text ' . $platz]),
+            'overrides' => '{}', 'effects' => '{}', 'translations' => '{}',
+            'hidden' => 0, 'sort_order' => $platz,
+            'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
+        ]);
+    }
 
-    is(false, $ergebnis['ok'], 'Meldet einen Fehlschlag');
-    ok(is_array($ergebnis['stufen'] ?? null), 'Die Antwort enthaelt die Stufen');
-    ok(($ergebnis['stufen'][0]['name'] ?? '') === 'Servername',
-        'Und die erste Stufe ist der Servername');
-    is(false, $ergebnis['stufen'][0]['ok'] ?? true, 'Die als Erste scheitert');
+    $wesentlich = static function (int $projektId): array {
+        return array_map(static fn (array $p): array => [
+            'path' => $p['path'],
+            'title' => $p['title'],
+            'meta' => $p['meta_description'],
+            'nav' => (int) $p['in_navigation'],
+            'sections' => array_map(static fn (array $a): array => [
+                'type' => $a['type'], 'template_key' => $a['template_key'],
+                'content' => $a['content'], 'hidden' => (int) $a['hidden'],
+            ], $p['sections']),
+        ], \WebAtze\Build\SiteBuilder::loadPages($projektId));
+    };
 
-    // Die Meldung muss den Fall benennen, sonst hat die Stufe nichts
-    // gebracht: Es wurde kein Server abgewiesen, es wurde keiner gefunden.
-    $meldung = mb_strtolower((string) $ergebnis['message']);
-    ok(str_contains($meldung, 'gibt es nicht'), 'Sie sagt, dass es den Namen nicht gibt');
-    ok(str_contains($meldung, 'ftp.'), 'Und nennt das ftp. davor als Ursache');
+    $vorher = $wesentlich($id);
 
-    // Ab der ersten roten Stufe wird nicht weitergeraten.
-    is(1, count($ergebnis['stufen']), 'Nach der roten Stufe hoert der Test auf');
+    try {
+        // --------------------------------------------- rein und raus
+        //
+        // Der Stand wird als data/site.php geschrieben - genau so, wie
+        // AdminKit ihn beim Bauen auf die Kundenwebsite legt - und
+        // wieder eingelesen. Was dabei nicht Zeichen fuer Zeichen
+        // zurueckkommt, ginge beim Kunden verloren.
+        ensure_dir($ordner . '/data');
+        file_put_contents(
+            $ordner . '/data/site.php',
+            "<?php exit; ?>\n" . json_encode(
+                (new \WebAtze\Build\SiteBuilder($projekt, $ordner))->site(),
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            )
+        );
 
-    // Und was die Meldung vorschlaegt, muss auch anklickbar sein.
-    // Herausgekommen war: "trage / ein", daneben lauter Ordner, unter
-    // denen "/" nicht ist - weil die Liste nur Unterverzeichnisse
-    // sammelt und "/" keines ist.
-    $mitVorschlag = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'pruefErgebnis');
-    $mitVorschlag->setAccessible(true);
+        $ein = \WebAtze\Build\Uebernahme::inhalteUebernehmen($projekt);
 
-    $antwort = $mitVorschlag->invoke(null, false, 'Trage / ein.', ['/assets', '/data'], '/');
+        ok($ein['ok'], 'Der Stand laesst sich uebernehmen');
+        is(1, $ein['seiten'], 'Eine Seite');
+        is(3, $ein['abschnitte'], 'Drei Abschnitte');
+        is(0, $ein['uebrig'], 'Nichts bleibt uebrig');
+        is($vorher, $wesentlich($id), 'Rein und raus ist dasselbe');
 
-    ok(in_array('/', $antwort['ordner'], true), 'Der Vorschlag steht in der Liste zum Anklicken');
-    is('/', $antwort['ordner'][0], 'Und zwar vorn');
+        // Vor dem Ueberschreiben liegt eine Fassung - das ist die
+        // einzige Stelle, an der fremde Daten eigene ersetzen.
+        ok(\WebAtze\Domain\Publications::latest($seiteId) !== null,
+            'Vor der Uebernahme wurde eine Fassung angelegt');
 
-    $antwort = $mitVorschlag->invoke(null, false, 'x', ['/public_html'], '/public_html');
+        // ------------------------------------------- ohne site.php
+        //
+        // Ein ZIP aus dem Auftragstext hat keine. Das ist kein Fehler,
+        // sondern eine Auskunft - und es darf nichts ueberschreiben.
+        unlink($ordner . '/data/site.php');
 
-    is(1, count($antwort['ordner']), 'Ein Vorschlag, den es schon gibt, kommt nicht doppelt');
+        $ohne = \WebAtze\Build\Uebernahme::inhalteUebernehmen($projekt);
 
-    \WebAtze\Core\Db::delete('deploy_targets', 'project_id = :p', ['p' => $projectId]);
-    \WebAtze\Core\Db::delete('projects', 'id = :p', ['p' => $projectId]);
+        ok(!$ohne['ok'], 'Ohne data/site.php wird nichts uebernommen');
+        ok(str_contains($ohne['error'], 'nicht im Editor ändern'),
+            'Und es steht da, warum');
+        is($vorher, $wesentlich($id), 'Der bisherige Stand bleibt unangetastet');
+    } finally {
+        \WebAtze\Core\Db::delete('project_sections', 'project_id = :p', ['p' => $id]);
+        \WebAtze\Core\Db::delete('project_pages', 'project_id = :p', ['p' => $id]);
+        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
+    }
 });
 
 // ==================================================================
-test('Ein hochgeladenes Archiv wird geprueft, bevor es hinausgeht', function (): void {
-    // Der Weg ohne den eingebauten Generator: Auftragstext kopieren,
-    // die Website anderswo bauen lassen, das Ergebnis als ZIP
-    // hochladen. Die Namen in einem Archiv kommen damit von aussen -
-    // und ein Archiv ist nichts als eine Liste von Namen.
-    if (!class_exists(ZipArchive::class)) {
-        ok(true, 'Ohne ZIP-Erweiterung nicht pruefbar');
+test('Ein fremdes Archiv kommt nicht aus seinem Ordner heraus', function (): void {
+    // Ausgepackt wird jetzt wirklich - das war jahrelang der Einwand
+    // gegen diesen Weg. Er faellt, weil der Zielordner ausserhalb des
+    // Web-Ordners liegt; die Pfadpruefung faellt deshalb nicht weg.
+    $id = (int) \WebAtze\Core\Db::insert('projects', [
+        'name' => 'Auspacken', 'slug' => 'auspacken-' . bin2hex(random_bytes(4)),
+        'status' => 'ready', 'brief' => '{}', 'theme' => '{}',
+        'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
+    ]);
 
-        return;
-    }
+    $projekt = \WebAtze\Core\Db::first('SELECT * FROM projects WHERE id = :id', ['id' => $id]);
+    $draussen = sys_get_temp_dir() . '/wa-ausbruch-' . bin2hex(random_bytes(4)) . '.txt';
 
-    $plan = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'archivPlan');
-    $plan->setAccessible(true);
-
-    $bauen = static function (array $eintraege): ZipArchive {
-        $pfad = sys_get_temp_dir() . '/wa-archiv-' . bin2hex(random_bytes(6)) . '.zip';
+    $bauen = static function (array $eintraege): string {
+        $pfad = sys_get_temp_dir() . '/wa-probe-' . bin2hex(random_bytes(6)) . '.zip';
         $zip = new ZipArchive();
         $zip->open($pfad, ZipArchive::CREATE | ZipArchive::OVERWRITE);
 
         foreach ($eintraege as $name => $inhalt) {
-            $zip->addFromString((string) $name, (string) $inhalt);
+            $zip->addFromString($name, $inhalt);
         }
 
         $zip->close();
-        $zip->open($pfad);
 
-        return $zip;
+        return $pfad;
     };
 
-    // --- Was abgewiesen wird ----------------------------------------
-    foreach ([
-        'Pfadausbruch' => ['index.html' => 'x', '../../etc/passwd' => 'x'],
-        'Ausbruch mitten drin' => ['index.html' => 'x', 'a/../../b' => 'x'],
-        'Absoluter Pfad' => ['index.html' => 'x', '/etc/passwd' => 'x'],
-        'Laufwerksbuchstabe' => ['index.html' => 'x', 'C:/windows/x' => 'x'],
-    ] as $was => $eintraege) {
-        $ergebnis = $plan->invoke(null, $bauen($eintraege));
+    try {
+        foreach ([
+            'Ein Pfad mit ".." kommt nicht durch' => ['../ausbruch.txt' => 'nein'],
+            'Ein absoluter Pfad auch nicht' => ['/etc/boese.txt' => 'nein'],
+            'Und einer tief drin ebenso wenig' => ['website/assets/../../../weg.txt' => 'nein'],
+        ] as $was => $eintraege) {
+            $pfad = $bauen($eintraege);
+            $aus = \WebAtze\Build\Uebernahme::auspacken($projekt, $pfad);
 
-        ok(($ergebnis['error'] ?? '') !== '', $was . ': wird abgewiesen');
-        is([], $ergebnis['dateien'], $was . ': und nichts geht hinaus');
+            ok(!$aus['ok'], $was);
+            ok(str_contains($aus['error'], 'Archiv enthält'), 'Und sagt, was daran nicht geht (' . $was . ')');
+
+            @unlink($pfad);
+        }
+
+        ok(!is_file($draussen), 'Draussen ist nichts gelandet');
+
+        // Was durchkommt, kommt richtig an - samt weggeschnittenem
+        // gemeinsamen Stammordner.
+        $pfad = $bauen([
+            'website/index.html' => '<h1>Hallo</h1>',
+            'website/assets/stil.css' => 'body{}',
+            'website/__MACOSX/._index.html' => 'muell',
+        ]);
+
+        $aus = \WebAtze\Build\Uebernahme::auspacken($projekt, $pfad);
+        $ordner = \WebAtze\Build\Uebernahme::ordner($projekt);
+
+        ok($aus['ok'], 'Ein sauberes Archiv geht durch');
+        is(2, $aus['files'], 'Der Beipack von macOS bleibt draussen');
+        ok(is_file($ordner . '/index.html'), 'Die Startseite liegt oben, nicht im Stammordner');
+        ok(is_file($ordner . '/assets/stil.css'), 'Der Unterordner ebenso');
+        ok(\WebAtze\Build\Uebernahme::vorhanden($projekt), 'Und der Stand gilt als vorhanden');
+
+        // Ein zweites Archiv ersetzt das erste vollstaendig: Was beim
+        // Kunden geloescht wurde, darf hier nicht liegenbleiben und
+        // beim naechsten Herunterladen zu ihm zurueckwandern.
+        @unlink($pfad);
+        $pfad = $bauen(['index.html' => '<h1>Neu</h1>']);
+        \WebAtze\Build\Uebernahme::auspacken($projekt, $pfad);
+
+        ok(!is_file($ordner . '/assets/stil.css'), 'Ein neues Archiv laesst nichts Altes liegen');
+        @unlink($pfad);
+    } finally {
+        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
+        @unlink($draussen);
     }
-
-    // --- Der umschliessende Ordner faellt weg ------------------------
-    // So packen die meisten: alles in einem Ordner. Ohne das Wegschneiden
-    // laege die Website unter /public_html/meine-website/ und niemand
-    // faende sie.
-    $ergebnis = $plan->invoke(null, $bauen([
-        'meine-website/index.html' => 'x',
-        'meine-website/assets/site.css' => 'x',
-        'meine-website/unterseite/kontakt.html' => 'x',
-    ]));
-
-    $ziele = array_column($ergebnis['dateien'], 'ziel');
-    sort($ziele);
-
-    is(['assets/site.css', 'index.html', 'unterseite/kontakt.html'], $ziele,
-        'Der eine umschliessende Ordner wird weggeschnitten');
-
-    // Liegen die Dateien schon oben, bleibt alles, wie es ist.
-    $ergebnis = $plan->invoke(null, $bauen([
-        'index.html' => 'x',
-        'assets/site.css' => 'x',
-    ]));
-
-    $ziele = array_column($ergebnis['dateien'], 'ziel');
-    sort($ziele);
-
-    is(['assets/site.css', 'index.html'], $ziele, 'Ohne Ordner bleibt es, wie es ist');
-
-    // Zwei Ordner nebeneinander: dann ist keiner der umschliessende.
-    $ergebnis = $plan->invoke(null, $bauen([
-        'de/index.html' => 'x',
-        'en/index.html' => 'x',
-    ]));
-
-    $ziele = array_column($ergebnis['dateien'], 'ziel');
-    sort($ziele);
-
-    is(['de/index.html', 'en/index.html'], $ziele, 'Zwei Ordner bleiben beide stehen');
-
-    // --- Beipack fliegt raus -----------------------------------------
-    // Und zwar auch, wenn er nicht ganz vorn steht: Packt jemand seinen
-    // Website-Ordner ein, heisst der Eintrag
-    // "meine-website/__MACOSX/._x" - eine Pruefung auf den Anfang des
-    // Namens laesst ihn durch. Genau das ist passiert.
-    $ergebnis = $plan->invoke(null, $bauen([
-        'seite/index.html' => 'x',
-        'seite/__MACOSX/._index.html' => 'x',
-        'seite/.DS_Store' => 'x',
-        'seite/node_modules/foo/bar.js' => 'x',
-        'seite/.git/config' => 'x',
-    ]));
-
-    is(['index.html'], array_column($ergebnis['dateien'], 'ziel'),
-        'Beipack fliegt raus, auch tief im Archiv');
-
-    // --- PHP darf bleiben --------------------------------------------
-    // Anders als beim Editor-Plugin: Dieses Archiv geht auf den Server
-    // des Kunden und wird bei uns nie ausgepackt. Eine Kundenwebsite
-    // besteht zu einem guten Teil aus PHP - ihr Backend, das
-    // Kontaktformular, die Bruecke.
-    $ergebnis = $plan->invoke(null, $bauen([
-        'index.html' => 'x',
-        'kontakt.php' => 'x',
-        'admin/index.php' => 'x',
-    ]));
-
-    is(3, count($ergebnis['dateien']), 'PHP gehoert zu einer Kundenwebsite dazu');
-
-    // Und genau deshalb darf es bei uns nie landen: Der Weg aufs FTP
-    // liest aus dem Archiv und schreibt in die Leitung.
-    $quelle = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
-    );
-
-    ok(str_contains($quelle, 'getStreamIndex'),
-        'Das Archiv wird gestreamt, nicht bei uns ausgepackt');
-    ok(!str_contains($quelle, '$zip->extractTo'),
-        'Ausgepackt wird hier nichts');
 });
 
 // ==================================================================
-test('Die beiden Knoepfe stehen da, auch ohne Zugangsdaten', function (): void {
-    // Der Fehler, den der Browserdurchgang gefunden hat: Die ganze
-    // Tafel hing an "es gibt ein Ziel". Ohne hinterlegten Zugang war
-    // sie schlicht nicht da - und ein Knopf, der fehlt, erklaert
-    // nichts. Man sucht ihn dann an der Stelle, an der er nie stand.
-    // Jetzt steht er da und sagt selbst, was ihm fehlt.
-    $mit = \WebAtze\Core\View::partial('admin/deploy', [
-        'project' => ['id' => 7, 'name' => 'Probe', 'status' => 'draft', 'brief' => '{}'],
-        'target' => [
-            'id' => 1, 'host' => 'example.com', 'username' => 'web@example.com',
-            'protocol' => 'ftps', 'port' => 21, 'remote_path' => '/public_html',
-        ],
-        'builds' => [], 'job' => null, 'brief' => [],
-        'gefunden' => [], 'hostingAccounts' => [],
+test('Was noch nicht heruntergeladen wurde, steht da', function (): void {
+    // Seit die Uebertragung von Hand laeuft, ist das die wichtigste
+    // Auskunft der Liste. Sie haengt bewusst an keinem zweiten Merkmal,
+    // das gepflegt werden muesste - sondern an den Daten selbst.
+    $id = (int) \WebAtze\Core\Db::insert('projects', [
+        'name' => 'Offen', 'slug' => 'offen-' . bin2hex(random_bytes(4)),
+        'status' => 'ready', 'brief' => '{}', 'theme' => '{}',
+        'created_at' => \WebAtze\Core\Db::now(), 'updated_at' => \WebAtze\Core\Db::now(),
     ]);
 
-    $ohne = \WebAtze\Core\View::partial('admin/deploy', [
-        'project' => ['id' => 7, 'name' => 'Probe', 'status' => 'draft', 'brief' => '{}'],
-        'target' => null,
-        'builds' => [], 'job' => null, 'brief' => [],
-        'gefunden' => [], 'hostingAccounts' => [],
-    ]);
+    $holen = static fn (): array => (array) \WebAtze\Core\Db::first(
+        'SELECT * FROM projects WHERE id = :id', ['id' => $id]
+    );
 
-    foreach (['mit Zugang' => $mit, 'ohne Zugang' => $ohne] as $fall => $html) {
-        ok(str_contains($html, '/projekt/7/archiv'),
-            'Website hochladen ist da (' . $fall . ')');
-        ok(str_contains($html, '/projekt/7/stand-holen'),
-            'Aktuellen Stand holen ist da (' . $fall . ')');
+    try {
+        ok(!\WebAtze\Domain\Websites::offeneAenderung($holen()),
+            'Ohne Seiten mahnt nichts');
+
+        \WebAtze\Core\Db::insert('project_pages', [
+            'project_id' => $id, 'path' => '/', 'title' => 'Start',
+            'meta_description' => '', 'sort_order' => 0, 'in_navigation' => 1,
+            'created_at' => '2026-01-01 10:00:00', 'updated_at' => '2026-01-01 10:00:00',
+        ]);
+
+        // Geaendert, aber nie heruntergeladen und nichts gebaut: Es gibt
+        // noch nichts herauszugeben.
+        ok(!\WebAtze\Domain\Websites::offeneAenderung($holen()),
+            'Ohne gebauten Stand auch nicht');
+
+        // Heruntergeladen - danach ist Ruhe.
+        \WebAtze\Core\Db::update('projects', ['downloaded_at' => '2026-01-02 10:00:00'],
+            'id = :id', ['id' => $id]);
+
+        ok(!\WebAtze\Domain\Websites::offeneAenderung($holen()),
+            'Nach dem Herunterladen ist nichts offen');
+
+        // Und jetzt eine Aenderung danach.
+        \WebAtze\Core\Db::update('project_pages', ['updated_at' => '2026-01-03 10:00:00'],
+            'project_id = :p', ['p' => $id]);
+
+        ok(\WebAtze\Domain\Websites::offeneAenderung($holen()),
+            'Eine spaetere Aenderung meldet sich');
+
+        // Auch eine, die nur an einem Abschnitt haengt.
+        \WebAtze\Core\Db::update('projects', ['downloaded_at' => '2026-01-04 10:00:00'],
+            'id = :id', ['id' => $id]);
+
+        ok(!\WebAtze\Domain\Websites::offeneAenderung($holen()), 'Wieder heruntergeladen, wieder Ruhe');
+
+        \WebAtze\Core\Db::insert('project_sections', [
+            'project_id' => $id, 'page_id' => 1, 'type' => 'hero', 'template_key' => 'x',
+            'content' => '{}', 'overrides' => '{}', 'hidden' => 0, 'sort_order' => 0,
+            'created_at' => '2026-01-05 10:00:00', 'updated_at' => '2026-01-05 10:00:00',
+        ]);
+
+        ok(\WebAtze\Domain\Websites::offeneAenderung($holen()),
+            'Ein geaenderter Abschnitt zaehlt genauso');
+    } finally {
+        \WebAtze\Core\Db::delete('project_sections', 'project_id = :p', ['p' => $id]);
+        \WebAtze\Core\Db::delete('project_pages', 'project_id = :p', ['p' => $id]);
+        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
+    }
+});
+
+// ==================================================================
+test('Zum Kundenserver fuehrt keine Leitung mehr', function (): void {
+    // Der Abriss soll vollstaendig sein. Ein Ueberrest, der noch auf
+    // eine geloeschte Klasse zeigt, faellt sonst erst beim Kunden auf -
+    // als Fuenfhunderter auf einer Seite, die vorher lief.
+    foreach ([
+        'Build/Ftp.php',
+        'Build/Empfang.php',
+        'Build/FtpDeployer.php',
+        'Kit/empfang/webatze-empfang.php',
+        'Kit/site/php/wa-dateien.php',
+    ] as $weg) {
+        ok(!is_file(dirname(__DIR__) . '/public_html/app/' . $weg), $weg . ' ist weg');
     }
 
-    // Ohne Zugang sind sie stumpf - und sagen, wohin man muss.
-    ok(str_contains($ohne, 'disabled'), 'Ohne Zugang sind sie nicht scharf');
-    ok(str_contains($ohne, 'href="#zugang"'), 'Und der Weg dorthin steht daneben');
-    ok(str_contains($mit, 'id="zugang"'), 'Das Ziel des Verweises gibt es auch');
+    // Und niemand ruft sie noch.
+    $treffer = [];
 
-    // Mit Zugang keine stumpfen Knoepfe in der FTP-Tafel. Geschnitten
-    // wird zwischen deren Ueberschrift und der naechsten: Darueber
-    // liegt seit dem Umbau der Weg ueber HTTPS, und der ist ohne
-    // hinterlegte Adresse zu Recht stumpf. Frueher lief der Schnitt
-    // vom Seitenanfang an - und haette die fremde Tafel mitgemessen.
-    $von = (int) strpos($mit, 'Derselbe Weg über FTP');
-    $bis = (int) strpos($mit, '<h2 class="wa-panel__title">Paket<');
-    $tafel = substr($mit, $von, $bis - $von);
-    ok(str_contains($tafel, '/projekt/7/archiv'), 'Der Schnitt liegt hinter den Knoepfen');
-    ok(!str_contains($tafel, 'disabled'), 'Mit Zugang sind beide scharf');
+    $eintraege = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator(dirname(__DIR__) . '/public_html/app', FilesystemIterator::SKIP_DOTS)
+    );
+
+    foreach ($eintraege as $eintrag) {
+        if (!$eintrag->isFile() || $eintrag->getExtension() !== 'php') {
+            continue;
+        }
+
+        $inhalt = (string) file_get_contents($eintrag->getPathname());
+
+        // Aufrufe, nicht Erwaehnungen: Ein Kommentar darf erklaeren,
+        // wie die Klasse frueher hiess - genau dafuer stehen Kommentare
+        // da. Was nicht mehr stehen darf, ist ein Aufruf.
+        foreach ([
+            'FtpDeployer::', 'new FtpDeployer', 'Build\\Empfang;',
+            'Empfang::', 'Ftp::ausgangsprobe',
+        ] as $wort) {
+            if (str_contains($inhalt, $wort)) {
+                $treffer[] = basename($eintrag->getPathname()) . ' → ' . $wort;
+            }
+        }
+    }
+
+    is([], $treffer, 'Keine Datei ruft den geloeschten Transport');
+
+    // Jede Route findet ihr Ziel - der schaerfste Test des Abrisses.
+    $router = new Router();
+    \WebAtze\Core\Routes::register($router);
+
+    $eigenschaft = (new ReflectionClass($router))->getProperty('routes');
+    $eigenschaft->setAccessible(true);
+    $fehlen = [];
+
+    foreach ($eigenschaft->getValue($router) as $route) {
+        [$klasse, $methode] = explode('@', (string) $route['handler']);
+        $datei = dirname(__DIR__) . '/public_html/app/Http/' . $klasse . '.php';
+
+        if (!is_file($datei)
+            || preg_match('/function\s+' . preg_quote($methode, '/') . '\s*\(/', (string) file_get_contents($datei)) !== 1
+        ) {
+            $fehlen[] = (string) $route['handler'];
+        }
+    }
+
+    is([], array_values(array_unique($fehlen)), 'Jede Route zeigt auf eine Methode, die es gibt');
+
+    // Und die Zugangsdaten sind geblieben - du brauchst sie fuer
+    // FileZilla.
+    ok(method_exists(\WebAtze\Build\Zugang::class, 'saveTarget'), 'Zugangsdaten lassen sich speichern');
+    ok(method_exists(\WebAtze\Build\Zugang::class, 'passwort'), 'Und das Passwort nachschlagen');
 });
 
 // ==================================================================
@@ -3360,372 +3296,6 @@ test('Der Auftragstext verlangt am Ende ein ZIP', function (): void {
     foreach (['Claude', 'Anthropic', 'KI-generiert'] as $verraeter) {
         ok(!str_contains($text, $verraeter . ' hat'), 'Kein Hinweis auf ' . $verraeter);
     }
-});
-
-// ==================================================================
-test('Der Test nennt den Servernamen, der auflöst', function (): void {
-    // GoDaddy zeigt "ftp.deine-domain.ch" an - das ist keine Erfindung,
-    // das steht dort wirklich. Nur fuehrt die DNS-Zone den Eintrag
-    // nicht immer, und dann gibt es den Server schlicht nicht.
-    // Umgekehrt kommt genauso vor. Deshalb wird beides probiert.
-    $alternative = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'namensAlternative');
-    $alternative->setAccessible(true);
-
-    // Eine Domain, die es sicher gibt, mit einem ftp-Namen, den es
-    // sicher nicht gibt: genau sein Fall.
-    is('example.com', $alternative->invoke(null, 'ftp.example.com'),
-        'Zu ftp.X wird X vorgeschlagen, wenn X auflöst');
-
-    // Und was nirgends hinführt, wird nicht erfunden.
-    is('', $alternative->invoke(null, 'ftp.gibtsganzsicherzznicht.invalid'),
-        'Ohne auflösende Alternative wird nichts vorgeschlagen');
-    is('', $alternative->invoke(null, 'nurein wort'),
-        'Aus einem Namen ohne Punkt wird nichts geraten');
-
-    // Die Meldung nennt ihn dann auch.
-    $hilfe = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'namensHilfe');
-    $hilfe->setAccessible(true);
-
-    $text = (string) $hilfe->invoke(null, 'ftp.example.com');
-
-    ok(str_contains($text, 'example.com loest auf'), 'Die Meldung nennt den Namen, der geht');
-    ok(str_contains($text, 'DNS-Zone'), 'Und erklärt, warum GoDaddys Angabe hier nicht passt');
-
-    // Und die Antwort traegt ihn zum Anklicken mit.
-    $ergebnis = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'pruefErgebnis');
-    $ergebnis->setAccessible(true);
-
-    $antwort = $ergebnis->invoke(null, false, 'x', [], '', [], 'example.com');
-
-    is('example.com', (string) ($antwort['vorschlagHost'] ?? ''),
-        'Der Servervorschlag steht in der Antwort');
-
-    // Die Ansicht muss ihn ins Serverfeld eintragen, nicht ins Verzeichnis.
-    $view = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Views/admin/deploy.php'
-    );
-
-    ok(str_contains($view, 'data-fill="#host"'),
-        'Der Knopf fuellt das Serverfeld');
-});
-
-// ==================================================================
-test('Ein leerer Ordner ist kein Netzwerkfehler', function (): void {
-    // Was ihn diese Runde gekostet hat: Der Ordner fuer die neue
-    // Website war frisch angelegt und deshalb leer. Die Stufe las ihn
-    // ohne Muehe aus - null Eintraege - und meldete daraufhin:
-    //
-    //   Der Startordner liess sich nicht auflisten - meist eine
-    //   blockierte Datenverbindung.
-    //
-    // Er hat also eine Firewall gesucht, die es nicht gab. Dass die
-    // Schreibprobe zwei Stufen weiter unten durchlief, haette die
-    // Meldung sofort widerlegt: Ohne Datenverbindung kann man nicht
-    // schreiben.
-    $meldung = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'inhaltMeldung');
-    $meldung->setAccessible(true);
-
-    $leer = (string) $meldung->invoke(null, ['gelesen' => true, 'namen' => []], '/');
-    ok(str_contains($leer, 'leer'), 'Leer wird leer genannt');
-    ok(!str_contains($leer, 'Datenverbindung'),
-        'Und nicht der Datenverbindung angelastet');
-
-    $voll = (string) $meldung->invoke(null,
-        ['gelesen' => true, 'namen' => ['index.html', 'assets']], '/');
-    ok(str_contains($voll, '2 Eintraege'), 'Zwei Eintraege werden gezaehlt');
-
-    // Der Fehlschlag selbst bleibt ein Fehlschlag - die Begruendung
-    // steht seit der Datenverbindungs-Stufe eine Zeile tiefer.
-    $tot = (string) $meldung->invoke(null,
-        ['gelesen' => false, 'namen' => [], 'grund' => ''], '/');
-
-    ok(str_contains($tot, 'nicht auflisten'), 'Ein echter Fehlschlag heisst weiterhin so');
-
-    // Und die Namensliste muss "." und ".." draussen lassen.
-    is(
-        ['index.html', 'assets'],
-        \WebAtze\Build\Ftp::nurNamen(['/heim/index.html', '.', '..', '/heim/assets', '/heim/assets']),
-        'Pfade werden zu Namen, Doppeltes und Punkte fliegen raus'
-    );
-});
-
-// ==================================================================
-test('Bei toter Datenverbindung wird nachgemessen statt vermutet', function (): void {
-    // "Meist eine blockierte Datenverbindung" ist eine Vermutung, und
-    // mit einer Vermutung geht man nicht zum Hoster. Scheitert das
-    // Auflisten, schickt Ftp::datenDetails() PASV selbst, liest die
-    // genannte Adresse und klopft dort an - dreimal, denn ein einzelner
-    // Port kann zufaellig belegt sein.
-    foreach (['10.13.37.9', '192.168.1.50', '172.16.0.4', '127.0.0.1'] as $ip) {
-        ok(\WebAtze\Build\Ftp::internesNetz($ip), $ip . ' gilt nur im eigenen Netz');
-    }
-
-    foreach (['132.148.182.72', '92.205.173.138', '1.1.1.1'] as $ip) {
-        ok(!\WebAtze\Build\Ftp::internesNetz($ip), $ip . ' ist von aussen erreichbar');
-    }
-
-    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Ftp.php');
-
-    ok(str_contains($quelle, "ftp_raw(\$this->c, 'PASV')"), 'PASV wird selbst geschickt');
-    ok(str_contains($quelle, 'for ($i = 0; $i < 3; $i++)'),
-        'Und drei Ports geprueft - einer allein kann Zufall sein');
-    ok(str_contains($quelle, 'Connection refused'),
-        'Ein abgewiesener Port wird beim Namen genannt');
-
-    // Aus den rohen LIST-Zeilen kommen Namen heraus, nicht Zeilen.
-    is(
-        ['assets', 'index.html'],
-        \WebAtze\Build\Ftp::ausRohzeilen([
-            'total 2',
-            'drwxr-xr-x 2 web web  4096 Sep  5 12:00 assets',
-            '-rw-r--r-- 1 web web    34 Sep  5 12:00 index.html',
-        ]),
-        'Die Namen werden aus den Rohzeilen geholt'
-    );
-
-    ok(\WebAtze\Build\Ftp::ausRohzeilen(false) === false,
-        'Und ein Fehlschlag bleibt ein Fehlschlag');
-});
-
-// ==================================================================
-test('Der Neubau kann eine verdorbene Leitung nicht weiterreichen', function (): void {
-    // Gemessen gegen einen echten FTPS-Server: Bricht eine Uebertragung
-    // ab, liegt der Steuerkanal danach um eine Antwort versetzt.
-    // ftp_chdir bekommt das "226 Fertig" des vorigen Befehls, ftp_pwd
-    // dessen "250 Ok". Jede Stufe nach dem ersten Fehlschlag war damit
-    // erfunden - der Zielordner "gibt es nicht", obwohl der Server ihn
-    // eine Zeile spaeter mit 250 bestaetigt.
-    //
-    // Im Neubau steckt der Neuaufbau in mitNeustart(). Kein Aufrufer
-    // kann ihn vergessen, weil er die Verbindung nie in die Hand
-    // bekommt.
-    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Ftp.php');
-
-    ok(str_contains($quelle, 'private function mitNeustart(callable $tat)'),
-        'Es gibt genau eine Stelle, die einen Fehlschlag auffaengt');
-    ok(str_contains($quelle, '$this->ohnePasvAdresse = !$this->ohnePasvAdresse;'),
-        'Der zweite Versuch schaltet die Passivadresse um');
-    ok(str_contains($quelle, 'private $c = null;'),
-        'Die Verbindung bleibt drinnen - sie wird nie herausgereicht');
-
-    foreach (['liste', 'schreiben', 'lesen'] as $tat) {
-        ok(preg_match('/function ' . $tat . '\\(.*?mitNeustart/s', $quelle) === 1,
-            'Die Uebertragung ' . $tat . '() laeuft ueber mitNeustart()');
-    }
-
-    // null ist nicht [] - der Fehler, der die meiste Zeit gekostet hat.
-    ok(str_contains($quelle, 'return $roh === false ? null : self::nurNamen((array) $roh);'),
-        'Gescheitert gibt null, leer gibt eine leere Liste');
-
-    // Und die Fachschicht erkundet erst, wenn das Urteil steht.
-    $deployer = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
-    );
-
-    $urteil = strpos($deployer, "\$ergebnis = Ftp::pruefen(");
-    $erkunden = strpos($deployer, 'self::ordnerSuchen(');
-
-    ok($urteil !== false && $erkunden !== false, 'Beide Stellen gibt es');
-    ok($erkunden > $urteil, 'Erkundet wird erst nach dem Urteil');
-    ok(str_contains($deployer, "if (!\$ergebnis['ok']) {"),
-        'Und nur dann, wenn ein Vorschlag gebraucht wird');
-
-    // Der Wortlaut von PHP gehoert in die Meldung.
-    ok(str_contains($quelle, "preg_replace('/^ftp_\\w+\\(\\):\\s*/'"),
-        'Die Warnung von PHP wird eingefangen');
-    ok(str_contains($quelle, 'TLS-Sitzung'),
-        'Ein Abbruch in der Verschluesselung wird als solcher erklaert');
-});
-
-// ==================================================================
-test('Gruen gibt es erst, wenn jede Stufe gruen ist', function (): void {
-    // Der Verbindungstest faerbte seine Meldung nach "ok" - und "ok"
-    // beantwortet absichtlich nur, ob der Zielordner da ist. Eine
-    // gescheiterte Schreibprobe ergab damit eine gruene Erfolgs-
-    // meldung ueber einer Kette mit einem roten Kreuz darin.
-    $quelle = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Http/DeployController.php'
-    );
-
-    ok(!str_contains($quelle, "Session::flash(\$result['ok'] ? 'success' : 'error'"),
-        'Die Farbe haengt nicht mehr allein an "ok"');
-    ok(str_contains($quelle, "\$alleGruen ? 'success' : 'warning'"),
-        'Eine rote Stufe macht aus Gruen eine Warnung');
-
-    // Und die Vorgaben beim Speichern sind dieselben wie im Formular.
-    ok(str_contains($quelle, "\$request->input('protocol', 'ftp')"),
-        'Ein fehlendes Feld bringt nicht SFTP zurueck');
-    ok(str_contains($quelle, "'path' => \$request->input('path', '/')"),
-        'Und nicht /public_html');
-});
-
-// ==================================================================
-test('Die Zusammenfassung widerspricht der Stufenkette nicht', function (): void {
-    // Der Fehler, der ihn eine Runde gekostet hat: $vorhanden wurde mit
-    // dem Ergebnis der Schreibprobe ueberschrieben. Stand der Ordner
-    // gruen da und scheiterte nur das Schreiben, meldete die
-    // Zusammenfassung trotzdem "den Ordner gibt es nicht" - also
-    // wortwoertlich das Gegenteil der Stufe darueber. Er hat daraufhin
-    // drei Pfade durchprobiert, von denen der erste richtig war.
-    $meldung = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'endMeldung');
-    $meldung->setAccessible(true);
-
-    // Ordner da, Schreiben geht: alles gut.
-    $text = (string) $meldung->invoke(null, true, true, '/', '', 'web@example.ch');
-    ok(str_contains($text, 'Alles bereit'), 'Alles gruen wird auch so gemeldet');
-
-    // Ordner da, Schreiben geht nicht: Das ist eine andere Auskunft.
-    $text = (string) $meldung->invoke(null, true, false, '/', '', 'web@example.ch');
-
-    ok(!str_contains($text, 'gibt es von diesem Zugang aus nicht'),
-        'Ein gescheitertes Schreiben behauptet nicht, den Ordner gebe es nicht');
-    ok(str_contains($text, 'ist da'), 'Sondern sagt, dass er da ist');
-    ok(str_contains($text, 'Schreiben'), 'Und dass es am Schreiben liegt');
-    ok(str_contains($text, 'Herunterladen'),
-        'Und wozu es trotzdem reicht - der Stand laesst sich holen');
-
-    // Ordner nicht da: der alte, richtige Weg.
-    $text = (string) $meldung->invoke(null, false, null, '/falsch', '/', 'web@example.ch');
-    ok(str_contains($text, 'gibt es von diesem Zugang aus nicht'),
-        'Ein fehlender Ordner wird weiterhin als solcher gemeldet');
-    ok(str_contains($text, 'Trage / ein'), 'Mit dem Vorschlag, der passt');
-
-    // Und das Ergebnis insgesamt: Ein Zugang, der lesen aber nicht
-    // schreiben darf, ist zum Stand-Holen brauchbar. Ihn als
-    // Fehlschlag zu melden hiesse, eine funktionierende Verbindung
-    // wegzuwerfen.
-    $quelle = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Build/FtpDeployer.php'
-    );
-
-    ok(!str_contains($quelle, '$vorhanden = $konnte;'),
-        'Die Schreibprobe ueberschreibt das Urteil ueber den Ordner nicht mehr');
-    ok(!str_contains($quelle, '$vorhanden = (bool) $konnte;'),
-        'Auch nicht im SFTP-Weg');
-
-    // Die Schreibprobe versucht es ohne die NAT-Adresse noch einmal.
-    // Auf geteiltem Hosting kommt die Auflistung manchmal durch und das
-    // Hochladen nicht - dann sieht es aus wie eine fehlende Berechtigung.
-    // Der zweite Versuch steckt jetzt in mitNeustart() und gilt damit
-    // fuer jede Uebertragung, nicht nur fuer die Schreibprobe.
-    $neu = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Ftp.php');
-
-    ok(str_contains($neu, 'FTP_USEPASVADDRESS'),
-        'Die Passivadresse wird bei einem Fehlschlag umgangen');
-    ok(str_contains($neu, 'private function mitNeustart(callable $tat)'),
-        'Und zwar fuer jede Uebertragung, nicht nur fuer eine');
-});
-
-// ==================================================================
-test('Ein festgenageltes cPanel-Konto bekommt den richtigen Ordner', function (): void {
-    // Der Fall, der eine Woche gekostet hat: Ein FTP-Unterkonto wird in
-    // cPanel auf sein Verzeichnis festgenagelt. Nach der Anmeldung ist
-    // man bereits darin - der Pfad, der in cPanel stand, existiert von
-    // dort aus nicht mehr, weil er die Wurzel geworden ist.
-    $vorschlag = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'ordnerVorschlag');
-    $vorschlag->setAccessible(true);
-
-    // Hauptkonto: public_html liegt daneben, also der volle Pfad.
-    is('/public_html',
-        $vorschlag->invoke(null, ['public_html', 'mail', 'logs'], '/', 'kunde'),
-        'Neben public_html ist es das Hauptkonto');
-
-    is('/home/kunde/public_html',
-        $vorschlag->invoke(null, ['public_html', '.cpanel'], '/home/kunde', 'kunde'),
-        'Auch wenn der Startordner tiefer liegt');
-
-    // Unterkonto: eine Startseite an der Wurzel heisst festgenagelt.
-    is('/',
-        $vorschlag->invoke(null, ['index.html', 'assets', 'admin'], '/', 'web@preview.beispiel.ch'),
-        'Eine Startseite an der Wurzel heisst: schon drin');
-
-    // Leerer Ordner, aber @-Form: bei cPanel der zuverlaessigste Hinweis.
-    is('/',
-        $vorschlag->invoke(null, [], '/', 'web@preview.beispiel.ch'),
-        'Ein leeres Unterkonto sitzt trotzdem in seinem Ordner');
-
-    // Ohne @ und ohne Anhaltspunkt wird nichts erfunden.
-    is('', $vorschlag->invoke(null, [], '/', 'kunde'),
-        'Ohne Anhaltspunkt wird nicht geraten');
-
-    // Und Plesk hat andere Namen.
-    is('/httpdocs', $vorschlag->invoke(null, ['httpdocs', 'logs'], '/', 'kunde'),
-        'Bei Plesk heisst die Wurzel httpdocs');
-});
-
-// ==================================================================
-test('Das FTP-Formular erklaert nicht, es zeigt', function (): void {
-    // Ueber den Feldern standen aufgeklappte Anleitungen: wo man bei
-    // welchem Anbieter klickt, warum ein Unterkonto in seinem Ordner
-    // sitzt, was die DNS-Zone damit zu tun hat. Alles richtig, alles
-    // ungelesen - eine Wand liest niemand, und danach sucht man
-    // trotzdem, welche Angabe in welches Feld gehoert. Jetzt steht in
-    // jedem Feld ein Beispiel, an dem sich das ablesen laesst.
-    $view = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Views/admin/deploy.php'
-    );
-    $formular = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Views/partials/hosting-form.php'
-    );
-    $fragebogen = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Views/admin/create.php'
-    );
-
-    foreach (['Veroeffentlichen' => $view, 'Hosting-Zugang' => $formular,
-              'Fragebogen' => $fragebogen] as $wo => $inhalt) {
-        ok(!str_contains($inhalt, 'Wo finde ich die Zugangsdaten'),
-            'Keine Anleitung mehr (' . $wo . ')');
-        ok(!str_contains($inhalt, "\$info['steps']"),
-            'Und keine Schrittliste (' . $wo . ')');
-    }
-
-    // Die Beispiele: genau die Form, die er sucht.
-    foreach (['Veroeffentlichen' => $view, 'Hosting-Zugang' => $formular,
-              'Fragebogen' => $fragebogen] as $wo => $inhalt) {
-        ok(str_contains($inhalt, 'placeholder="domain.com"'),
-            'Server zeigt domain.com (' . $wo . ')');
-        ok(str_contains($inhalt, 'placeholder="benutzer@domain.com"'),
-            'Benutzername zeigt benutzer@domain.com (' . $wo . ')');
-    }
-
-    // Und die Vorgaben, mit denen es bei ihm stimmt.
-    ok(str_contains($view, "\$protocol = (string) (\$target['protocol'] ?? 'ftp')"),
-        'FTP ist die Vorgabe');
-    ok(str_contains($view, "\$target['remote_path'] ?? '/'"),
-        'Und das Verzeichnis ist "/"');
-    ok(str_contains($formular, "\$k['port'] ?? 21"), 'Port 21 im Hosting-Formular');
-    ok(str_contains($formular, "\$k['protocol'] ?? 'ftp'"), 'FTP im Hosting-Formular');
-
-    $anbieter = require dirname(__DIR__) . '/public_html/app/Support/providers.php';
-
-    foreach (['cpanel', 'godaddy'] as $name) {
-        is('ftp', (string) $anbieter['hosting'][$name]['protocol'],
-            $name . ': FTP ist die Vorgabe');
-        is(21, (int) $anbieter['hosting'][$name]['port'], $name . ': Port 21');
-        is('/', (string) $anbieter['hosting'][$name]['path'], $name . ': Verzeichnis /');
-        ok(!isset($anbieter['hosting'][$name]['steps']),
-            $name . ': die Anleitung ist auch aus den Daten weg');
-    }
-
-    // Beim Domain-Umzug bleibt die Anleitung - dort ist sie der Inhalt
-    // der Seite und nicht die Wand vor dem Formular.
-    ok(isset($anbieter['registrar']['godaddy']['authcode']),
-        'Der Domain-Assistent behaelt seine Angaben');
-
-    // Und die Felder muessen so heissen, wie das JavaScript sie sucht -
-    // sonst folgt der Port der Uebertragungsart nicht, und Port 21 gegen
-    // einen SSH-Dienst sieht von aussen aus wie ein toter Server.
-    foreach (['protocol', 'port', 'path', 'host'] as $feld) {
-        ok(str_contains($view, 'data-ftp-field="' . $feld . '"'),
-            'Das Feld ' . $feld . ' ist fuer das JavaScript auffindbar');
-    }
-
-    $js = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/admin/admin.js');
-
-    ok(!str_contains($js, "getElementById('ftp_protocol')"),
-        'Das JavaScript sucht nicht mehr nach einer ID, die es nur auf einer Seite gibt');
-    ok(str_contains($js, 'initFtpPortFollowsProtocol'),
-        'Und der Port folgt der Uebertragungsart');
 });
 
 // ==================================================================
@@ -3759,50 +3329,6 @@ test('Die Anbieterliste schreibt nichts in fremde Felder', function (): void {
         (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Views/admin/create.php'),
         'data-hosting-select'
     ), 'Im Fragebogen bleibt sie, wo sie hingehoert');
-});
-
-// ==================================================================
-test('Der Pfad einer Subdomain wird gefunden', function (): void {
-    // Ein FTP-Zugang laesst sich in cPanel nur fuer die Hauptdomain
-    // anlegen. Der Ordner einer Subdomain liegt darunter, meist in
-    // public_html und benannt wie die Subdomain. Wer das nicht weiss,
-    // raet - und bekam frueher nur "gibt es dort nicht" zurueck.
-    $orte = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'suchorte');
-    $orte->setAccessible(true);
-
-    $gesucht = $orte->invoke(null, '/public_html/preview', '/home/kunde');
-
-    ok(in_array('/home/kunde', $gesucht, true), 'Im Heimatverzeichnis wird nachgesehen');
-    ok(in_array('/home/kunde/public_html', $gesucht, true), 'Und in dessen public_html');
-    ok(in_array('/public_html', $gesucht, true), 'Und eine Ebene ueber dem gewuenschten Pfad');
-    ok(count($gesucht) === count(array_unique($gesucht)), 'Keine Stelle doppelt');
-
-    // Aus dem Gefundenen soll der passende Ordner vorgeschlagen werden.
-    $vor = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'vorschlagen');
-    $vor->setAccessible(true);
-
-    $gefunden = ['/public_html/alt', '/public_html/preview', '/public_html/mail'];
-
-    is('/public_html/preview', $vor->invoke(null, $gefunden, '/public_html/preview'),
-        'Der gleichnamige Ordner wird vorgeschlagen');
-    is('/public_html/preview', $vor->invoke(null, $gefunden, '/irgendwo/preview'),
-        'Auch wenn der Betreiber den falschen Oberordner geraten hat');
-    is('', $vor->invoke(null, $gefunden, '/public_html/gibtsnicht'),
-        'Ohne Treffer wird nichts erfunden');
-    is('', $vor->invoke(null, [], '/public_html/preview'), 'Und ohne Fundstuecke erst recht nicht');
-
-    // Der Pfad selbst darf nicht aus dem Zielverzeichnis ausbrechen.
-    $sauber = new ReflectionMethod(\WebAtze\Build\FtpDeployer::class, 'cleanPath');
-    $sauber->setAccessible(true);
-
-    is('/public_html/preview', $sauber->invoke(null, 'public_html/preview'),
-        'Ein fehlender Schraegstrich wird ergaenzt');
-    is('/public_html/preview', $sauber->invoke(null, '/public_html/preview/'),
-        'Ein ueberzaehliger faellt weg');
-    is('/public_html/preview', $sauber->invoke(null, '//public_html///preview'),
-        'Doppelte werden zusammengefasst');
-    ok(!str_contains((string) $sauber->invoke(null, '/public_html/../../etc'), '..'),
-        'Ausbrechen geht nicht');
 });
 
 // ==================================================================
@@ -7144,598 +6670,6 @@ test('Im Hellen bleibt lesbar, was im Dunkeln lesbar war', function (): void {
         'Hell: leise bleibt leiser als gedaempft');
     ok($k('#8688A8', '#12122A') < $k('#9B9CB8', '#12122A'),
         'Dunkel: ebenso');
-});
-
-// ==================================================================
-test('Der Empfaenger nimmt nur an, was unterschrieben und drinnen ist', function (): void {
-    // Der Weg ohne FTP: eine Datei, die einmal von Hand auf die
-    // Kundenwebsite gelegt wird und danach ueber HTTPS Dateien
-    // entgegennimmt. Sie steht offen im Netz - also muss jede der vier
-    // Wachen darin stehen, und der Schluessel darf nicht die Vorlage
-    // sein.
-    $vorlage = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Kit/empfang/webatze-empfang.php'
-    );
-
-    ok(str_contains($vorlage, '%%SCHLUESSEL%%'), 'Die Vorlage hat einen Platzhalter');
-
-    foreach ([
-        'HOECHSTALTER' => 'Sie laeuft von selbst ab',
-        'hash_hmac' => 'Sie prueft die Unterschrift',
-        'hash_equals' => 'Und zwar zeitkonstant',
-        'FENSTER' => 'Sie hat ein Zeitfenster',
-        'Schon dagewesen' => 'Sie merkt sich Einmalwerte',
-        'Nur relative Pfade' => 'Sie weist absolute Pfade ab',
-        'realpath' => 'Und prueft den echten Pfad gegen Symlinks',
-        'verschwinden' => 'Sie loescht sich selbst wieder',
-    ] as $stueck => $warum) {
-        ok(str_contains($vorlage, $stueck), $warum);
-    }
-
-    // Der Pfad wird an den einzelnen Schritten geprueft, nicht am Text:
-    // ein ".." mitten in einem Namen ist harmlos, eines als eigener
-    // Schritt fuehrt hinaus.
-    ok(str_contains($vorlage, "foreach (explode('/', str_replace('\\\\', '/', \$ziel)) as \$schritt)"),
-        'Geprueft wird Schritt fuer Schritt, auch mit Rueckwaerts-Schraegstrich');
-
-    // Und die ausgelieferte Datei traegt einen echten Schluessel.
-    $projekt = (int) \WebAtze\Core\Db::insert('projects', [
-        'name' => 'Empfangstest', 'slug' => 'empfang-' . bin2hex(random_bytes(4)),
-        'status' => 'ready', 'created_at' => \WebAtze\Core\Db::now(),
-        'updated_at' => \WebAtze\Core\Db::now(),
-    ]);
-
-    $datei = \WebAtze\Build\Empfang::datei($projekt);
-
-    ok(!str_contains($datei, '%%SCHLUESSEL%%'), 'Im Ergebnis steht kein Platzhalter mehr');
-    ok(preg_match("/const SCHLUESSEL = '[0-9a-f]{64}'/", $datei) === 1,
-        'Sondern ein Schluessel aus 64 Zeichen');
-
-    // Zwei Websites, zwei Schluessel - sonst oeffnet einer alle.
-    $zweites = (int) \WebAtze\Core\Db::insert('projects', [
-        'name' => 'Empfangstest 2', 'slug' => 'empfang2-' . bin2hex(random_bytes(4)),
-        'status' => 'ready', 'created_at' => \WebAtze\Core\Db::now(),
-        'updated_at' => \WebAtze\Core\Db::now(),
-    ]);
-
-    ok(\WebAtze\Build\Empfang::schluessel($projekt) !== \WebAtze\Build\Empfang::schluessel($zweites),
-        'Jede Website bekommt ihren eigenen Schluessel');
-
-    // Und er ist nicht der der Bruecke: Wer den Empfaenger liest, haette
-    // sonst auch die Bruecke offen.
-    ok(\WebAtze\Build\Empfang::schluessel($projekt) !== \WebAtze\Domain\Bridge::secret($projekt),
-        'Der Schluessel der Bruecke bleibt ein anderer');
-
-    ok(\WebAtze\Build\Empfang::neuerSchluessel($projekt) !== $datei,
-        'Ein neuer Schluessel laesst sich setzen');
-
-    \WebAtze\Core\Db::delete('projects', 'id IN (:a, :b)', ['a' => $projekt, 'b' => $zweites]);
-});
-
-// ==================================================================
-test('Der Empfaenger laesst sich nicht ueberreden - im Durchlauf gemessen', function (): void {
-    // Bisher wurde die Datei nur gelesen: Steht "hash_equals" darin,
-    // steht "realpath" darin. Das findet eine geloeschte Wache - nicht
-    // eine, die dasteht und nicht greift. Und seit der Empfaenger auch
-    // herausgibt statt nur anzunehmen, ist genau das der Unterschied.
-    $schluessel = bin2hex(random_bytes(32));
-    $platz = empfaenger_platz($schluessel);
-
-    if ($platz === null) {
-        fehler('Der Testserver fuer den Empfaenger startete nicht');
-
-        return;
-    }
-
-    try {
-        // -------------------------------------------- was gehen soll
-        is(200, empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel)['status'],
-            'Ein Hallo kommt durch');
-
-        ok(empfaenger_lauf($platz, [
-            'aktion' => 'schreiben',
-            'pfad' => 'index.html',
-            'inhalt' => base64_encode('<h1>Hallo</h1>'),
-        ], $schluessel)['ok'], 'Eine Datei laesst sich schreiben');
-
-        ok(is_file($platz['ordner'] . '/index.html'), 'Und sie liegt danach wirklich da');
-
-        ok(empfaenger_lauf($platz, [
-            'aktion' => 'schreiben',
-            'pfad' => 'assets/stil.css',
-            'inhalt' => base64_encode('body{}'),
-        ], $schluessel)['ok'], 'Auch in einen Unterordner, den es noch nicht gab');
-
-        $liste = empfaenger_lauf($platz, ['aktion' => 'liste'], $schluessel);
-        $namen = array_column((array) ($liste['daten']['dateien'] ?? []), 'pfad');
-
-        sort($namen);
-        is(['assets/stil.css', 'index.html'], $namen, 'Die Liste nennt beide Dateien');
-
-        // Sich selbst und den Einmalwert-Merker nicht: Beide gehoeren
-        // zur Uebertragung und nicht zur Website. Kaemen sie mit, stuende
-        // der Schluessel im Archiv des Kunden.
-        ok(!in_array('webatze-empfang.php', $namen, true), 'Sich selbst nennt sie nicht');
-        ok(!in_array('.webatze-einmal', $namen, true), 'Und den Einmalwert-Merker auch nicht');
-
-        $geholt = empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'index.html'], $schluessel);
-        is('<h1>Hallo</h1>', base64_decode((string) ($geholt['daten']['inhalt'] ?? ''), true),
-            'Und was geschrieben wurde, kommt auch wieder zurueck');
-
-        // ------------------------------------------- was nicht gehen darf
-        $fremd = bin2hex(random_bytes(32));
-
-        foreach ([
-            'Ohne Unterschrift wird nicht aufgelistet' =>
-                [['aktion' => 'liste'], ['ohneUnterschrift' => true], 401],
-            'Ohne Unterschrift wird nichts herausgegeben' =>
-                [['aktion' => 'holen', 'pfad' => 'index.html'], ['ohneUnterschrift' => true], 401],
-            'Ohne Unterschrift wird nichts geschrieben' =>
-                [['aktion' => 'schreiben', 'pfad' => 'x.php', 'inhalt' => ''], ['ohneUnterschrift' => true], 401],
-            'Ein fremder Schluessel oeffnet nichts' =>
-                [['aktion' => 'holen', 'pfad' => 'index.html'], ['schluessel' => $fremd], 401],
-            'Eine alte Anfrage gilt nicht mehr' =>
-                [['aktion' => 'hallo'], ['zeit' => time() - 600], 401],
-            'Und eine aus der Zukunft auch nicht' =>
-                [['aktion' => 'hallo'], ['zeit' => time() + 600], 401],
-            'GET fuehrt zu nichts' =>
-                [['aktion' => 'hallo'], ['method' => 'GET'], 405],
-            'Holen ueber ".." fuehrt nicht hinaus' =>
-                [['aktion' => 'holen', 'pfad' => '../geheim.txt'], [], 400],
-            'Holen mit absolutem Pfad auch nicht' =>
-                [['aktion' => 'holen', 'pfad' => '/etc/passwd'], [], 400],
-            'Schreiben ueber ".." ebenso wenig' =>
-                [['aktion' => 'schreiben', 'pfad' => '../boese.php', 'inhalt' => ''], [], 400],
-            'Ein unbekannter Auftrag wird abgewiesen' =>
-                [['aktion' => 'alles-loeschen'], [], 400],
-        ] as $was => [$rumpf, $abwandlung, $erwartet]) {
-            is($erwartet, empfaenger_lauf($platz, $rumpf, $schluessel, $abwandlung)['status'], $was);
-        }
-
-        // Zweimal derselbe Einmalwert: Eine mitgeschnittene Anfrage ist
-        // entweder zu alt oder schon dagewesen.
-        $einmal = bin2hex(random_bytes(16));
-
-        ok(empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel, ['einmal' => $einmal])['ok'],
-            'Ein Einmalwert geht einmal durch');
-        is(409, empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel, ['einmal' => $einmal])['status'],
-            'Und kein zweites Mal');
-
-        // Symlinks: Was der Text nicht verraet, verraet der echte Pfad.
-        $draussen = sys_get_temp_dir() . '/wa-draussen-' . bin2hex(random_bytes(4));
-
-        mkdir($draussen, 0777, true);
-        file_put_contents($draussen . '/geheim.txt', 'NICHT HERAUSGEBEN');
-        symlink($draussen . '/geheim.txt', $platz['ordner'] . '/tuer.txt');
-        symlink($draussen, $platz['ordner'] . '/raus');
-
-        $durchDieTuer = empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'tuer.txt'], $schluessel);
-
-        ok(!$durchDieTuer['ok'], 'Ein Symlink gibt die Datei dahinter nicht her');
-        ok(!str_contains(
-            base64_decode((string) ($durchDieTuer['daten']['inhalt'] ?? ''), true) ?: '',
-            'NICHT HERAUSGEBEN'
-        ), 'Und schon gar nicht ihren Inhalt');
-
-        ok(!empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'raus/geheim.txt'], $schluessel)['ok'],
-            'Auch nicht durch einen Ordner-Symlink hindurch');
-
-        ok(!empfaenger_lauf($platz, [
-            'aktion' => 'schreiben',
-            'pfad' => 'raus/boese.php',
-            'inhalt' => base64_encode('<?php'),
-        ], $schluessel)['ok'], 'Und geschrieben wird dort auch nicht');
-        ok(!is_file($draussen . '/boese.php'), 'Draussen ist nichts gelandet');
-
-        $namenMitTuer = array_column(
-            (array) (empfaenger_lauf($platz, ['aktion' => 'liste'], $schluessel)['daten']['dateien'] ?? []),
-            'pfad'
-        );
-
-        ok(!in_array('tuer.txt', $namenMitTuer, true), 'Die Liste nennt Symlinks erst gar nicht');
-        ok(!in_array('raus/geheim.txt', $namenMitTuer, true), 'Und steigt auch nicht durch sie hinab');
-
-        @unlink($draussen . '/geheim.txt');
-        @rmdir($draussen);
-
-        // Und zum Schluss raeumt er sich selbst weg.
-        ok(empfaenger_lauf($platz, ['aktion' => 'fertig'], $schluessel)['ok'], 'Er nimmt das Ende an');
-        ok(!is_file($platz['ordner'] . '/webatze-empfang.php'), 'Und liegt danach nicht mehr da');
-        ok(!is_file($platz['ordner'] . '/.webatze-einmal'), 'Der Merker ist auch weg');
-    } finally {
-        empfaenger_ende($platz);
-    }
-});
-
-// ==================================================================
-test('Hinauf und herunter, beides ueber HTTPS', function (): void {
-    // Der ganze Weg an einem Stueck: ein Archiv hinauf, derselbe Stand
-    // zurueck. Gegen einen echten Webserver, damit auch die Seite
-    // dazwischen - Unterschrift, Zeitfenster, Pfadpruefung - wirklich
-    // durchlaufen wird.
-    putenv('no_proxy=127.0.0.1,localhost');
-    putenv('NO_PROXY=127.0.0.1,localhost');
-
-    $id = (int) \WebAtze\Core\Db::insert('projects', [
-        'name' => 'Weg ueber HTTPS',
-        'slug' => 'https-weg-' . bin2hex(random_bytes(4)),
-        'status' => 'ready',
-        'created_at' => \WebAtze\Core\Db::now(),
-        'updated_at' => \WebAtze\Core\Db::now(),
-    ]);
-
-    $platz = empfaenger_platz(\WebAtze\Build\Empfang::schluessel($id));
-
-    if ($platz === null) {
-        fehler('Der Testserver fuer den Empfaenger startete nicht');
-        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
-
-        return;
-    }
-
-    $projekt = [
-        'id' => $id,
-        'slug' => 'https-weg',
-        'name' => 'Weg ueber HTTPS',
-        'domain' => 'http://127.0.0.1:' . $platz['port'],
-    ];
-
-    $archiv = sys_get_temp_dir() . '/wa-https-' . bin2hex(random_bytes(4)) . '.zip';
-    $zurueck = sys_get_temp_dir() . '/wa-https-zurueck-' . bin2hex(random_bytes(4)) . '.zip';
-
-    try {
-        ok(\WebAtze\Build\Empfang::erreichbar($projekt)['ok'], 'Der Empfaenger meldet sich');
-
-        // Ein Archiv mit dem gemeinsamen Stamm, den archivPlan
-        // wegschneidet - so kommt es aus dem Auftragstext zurueck.
-        $zip = new ZipArchive();
-        $zip->open($archiv, ZipArchive::CREATE | ZipArchive::OVERWRITE);
-        $zip->addFromString('website/index.html', '<h1>Hallo</h1>');
-        $zip->addFromString('website/assets/stil.css', 'body{color:red}');
-        $zip->addFromString('website/bilder/logo.svg', '<svg/>');
-        $zip->close();
-
-        // Liegen lassen, denn gleich soll derselbe Stand zurueck.
-        $hinauf = \WebAtze\Build\Empfang::senden($projekt, $archiv, null, 60.0, false);
-
-        ok($hinauf['ok'], 'Das Archiv geht hinauf');
-        is(3, $hinauf['files'], 'Alle drei Dateien');
-        ok(!($hinauf['aufgeraeumt'] ?? true), 'Mit Haekchen bleibt der Empfaenger liegen');
-        ok(is_file($platz['ordner'] . '/webatze-empfang.php'), 'Und liegt auch wirklich noch da');
-
-        // Der gemeinsame Stamm ist weg: Die Startseite liegt oben.
-        ok(is_file($platz['ordner'] . '/index.html'), 'Die Startseite liegt im Zielverzeichnis');
-        ok(is_file($platz['ordner'] . '/assets/stil.css'), 'Der Unterordner ebenso');
-
-        $zip2 = new ZipArchive();
-        $zip2->open($zurueck, ZipArchive::CREATE | ZipArchive::OVERWRITE);
-        $stand = \WebAtze\Build\Empfang::holen($projekt, $zip2, 60.0, null, true);
-        $zip2->close();
-
-        ok($stand['ok'], 'Und derselbe Stand kommt zurueck');
-        is(3, $stand['files'], 'Wieder alle drei');
-
-        // Geholt wird ueber die dauerhafte Leseschnittstelle - und die
-        // raeumt sich nicht weg. Sie ist kein Besuch, sie gehoert zur
-        // Website; das Haekchen betrifft nur den Empfaenger.
-        ok(!$stand['aufgeraeumt'], 'Die Leseschnittstelle raeumt sich nicht weg');
-        ok(is_file($platz['ordner'] . '/' . \WebAtze\Build\Empfang::DAUERDATEI),
-            'Und liegt danach noch da');
-
-        $gelesen = new ZipArchive();
-        $gelesen->open($zurueck);
-        $inhalt = (string) $gelesen->getFromName('index.html');
-        $namen = [];
-
-        for ($i = 0; $i < $gelesen->numFiles; $i++) {
-            $namen[] = (string) $gelesen->getNameIndex($i);
-        }
-
-        $gelesen->close();
-
-        is(3, count($namen), 'Im Rueckarchiv liegen drei Dateien');
-        is('<h1>Hallo</h1>', $inhalt, 'Und der Inhalt ist derselbe');
-
-        // Das Werkzeug gehoert nicht ins Werkstueck. In beiden
-        // Schnittstellendateien steht ein Schluessel - der hat in einem
-        // Archiv nichts verloren, das heruntergeladen und weitergereicht
-        // wird.
-        ok(!in_array(\WebAtze\Build\Empfang::DAUERDATEI, $namen, true),
-            'Die Leseschnittstelle steht nicht im Archiv');
-        ok(!in_array(\WebAtze\Build\Empfang::DATEI, $namen, true),
-            'Der Empfaenger auch nicht');
-        ok(!in_array('.webatze-einmal', $namen, true), 'Und kein Merker');
-
-        // Und die Probe sagt jetzt, welcher der beiden Wege offensteht.
-        $danach = \WebAtze\Build\Empfang::erreichbar($projekt);
-
-        ok($danach['ok'], 'Danach steht der Weg immer noch offen');
-        is('dauerhaft', $danach['art'], 'Und zwar der dauerhafte');
-
-        // Sperren heisst: neuer Schluessel. Loeschen kann sie sich nicht
-        // - sie darf ja nicht schreiben. Also weist die liegende Datei
-        // von da an alles ab, was ankommt.
-        \WebAtze\Build\Empfang::neuerLeseschluessel($id);
-        \WebAtze\Build\Empfang::neuerSchluessel($id);
-
-        $gesperrt = \WebAtze\Build\Empfang::erreichbar($projekt);
-
-        ok(!$gesperrt['ok'], 'Nach dem Sperren meldet sich keine mehr');
-        ok(is_file($platz['ordner'] . '/' . \WebAtze\Build\Empfang::DAUERDATEI),
-            'Obwohl die Datei noch dort liegt');
-    } finally {
-        empfaenger_ende($platz);
-        @unlink($archiv);
-        @unlink($zurueck);
-        \WebAtze\Core\Db::delete('projects', 'id = :id', ['id' => $id]);
-    }
-});
-
-// ==================================================================
-test('Die Leseschnittstelle liest - und tut sonst nichts', function (): void {
-    // Sie bleibt auf der Kundenwebsite liegen, und das ist der ganze
-    // Unterschied zum Empfaenger: Der wird hingelegt und loescht sich
-    // wieder. Was dauerhaft offensteht, darf deshalb nicht schreiben
-    // koennen - und keine Geheimnisse herausgeben.
-    $schluessel = bin2hex(random_bytes(32));
-    $platz = empfaenger_platz($schluessel, 'dauerhaft');
-
-    if ($platz === null) {
-        fehler('Der Testserver fuer die Leseschnittstelle startete nicht');
-
-        return;
-    }
-
-    try {
-        // Eine kleine Website mit einem Geheimnis darin.
-        mkdir($platz['ordner'] . '/data', 0777, true);
-        mkdir($platz['ordner'] . '/assets', 0777, true);
-        file_put_contents($platz['ordner'] . '/index.html', '<h1>Hallo</h1>');
-        file_put_contents($platz['ordner'] . '/assets/stil.css', 'body{}');
-        file_put_contents($platz['ordner'] . '/data/config.php', "<?php return ['bridge_secret' => 'GEHEIM'];");
-        file_put_contents($platz['ordner'] . '/webatze-empfang.php', '<?php // der Empfaenger');
-
-        // -------------------------------------------- was sie koennen soll
-        $hallo = empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel);
-
-        ok($hallo['ok'], 'Sie meldet sich');
-        is('dauerhaft', (string) ($hallo['daten']['art'] ?? ''),
-            'Und sagt, welche der beiden sie ist');
-
-        $liste = empfaenger_lauf($platz, ['aktion' => 'liste'], $schluessel);
-        $namen = array_column((array) ($liste['daten']['dateien'] ?? []), 'pfad');
-
-        sort($namen);
-        is(['assets/stil.css', 'index.html'], $namen, 'Sie nennt die Website');
-
-        is('<h1>Hallo</h1>', base64_decode(
-            (string) (empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'index.html'],
-                $schluessel)['daten']['inhalt'] ?? ''),
-            true
-        ), 'Und gibt heraus, was dort steht');
-
-        // ------------------------------------------ was sie nicht darf
-        //
-        // Das Geheimnis zuerst: In data/config.php steht der Schluessel
-        // der Bruecke. Eine Lesestelle, die den herausgibt, ist keine
-        // Lesestelle mehr, sondern der Generalschluessel.
-        ok(!in_array('data/config.php', $namen, true), 'config.php steht nicht in der Liste');
-        ok(!in_array('wa-dateien.php', $namen, true), 'Sie selbst auch nicht');
-        ok(!in_array('webatze-empfang.php', $namen, true), 'Und der Empfaenger auch nicht');
-        ok(!in_array('.webatze-gelesen', $namen, true), 'Kein Merker');
-
-        // Aber sie sagt, dass etwas fehlt. Ein Archiv, dem stillschweigend
-        // etwas fehlt, wird irgendwann fuer eine Sicherung gehalten.
-        ok((int) ($liste['daten']['zurueckgehalten'] ?? 0) > 0,
-            'Sie zaehlt, was sie zurueckhaelt, statt es zu verschweigen');
-
-        foreach ([
-            'config.php wird nicht herausgegeben' => 'data/config.php',
-            'Sie selbst auch nicht' => 'wa-dateien.php',
-            'Der Empfaenger auch nicht' => 'webatze-empfang.php',
-        ] as $was => $pfad) {
-            $versuch = empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => $pfad], $schluessel);
-
-            ok(!$versuch['ok'], $was);
-            ok(!str_contains(
-                base64_decode((string) ($versuch['daten']['inhalt'] ?? ''), true) ?: '',
-                'GEHEIM'
-            ), 'Und der Inhalt kommt auch nicht durch (' . $pfad . ')');
-        }
-
-        // Und schreiben kann sie ueberhaupt nicht.
-        $schreiben = empfaenger_lauf($platz, [
-            'aktion' => 'schreiben',
-            'pfad' => 'boese.php',
-            'inhalt' => base64_encode('<?php'),
-        ], $schluessel);
-
-        is(405, $schreiben['status'], 'Schreiben weist sie ab');
-        ok(!is_file($platz['ordner'] . '/boese.php'), 'Und es landet nichts');
-
-        ok(!empfaenger_lauf($platz, ['aktion' => 'fertig'], $schluessel)['ok'],
-            'Sie loescht sich auch nicht selbst weg');
-        ok(is_file($platz['ordner'] . '/wa-dateien.php'), 'Sie liegt noch da');
-
-        // Dieselben Wachen wie beim Empfaenger.
-        $einmal = bin2hex(random_bytes(16));
-
-        foreach ([
-            'Ohne Unterschrift geht nichts' => [['aktion' => 'liste'], ['ohneUnterschrift' => true], 401],
-            'Ein fremder Schluessel oeffnet nichts' =>
-                [['aktion' => 'liste'], ['schluessel' => bin2hex(random_bytes(32))], 401],
-            'Eine alte Anfrage gilt nicht' => [['aktion' => 'hallo'], ['zeit' => time() - 600], 401],
-            'GET fuehrt zu nichts' => [['aktion' => 'hallo'], ['method' => 'GET'], 405],
-            'Holen ueber ".." fuehrt nicht hinaus' =>
-                [['aktion' => 'holen', 'pfad' => '../geheim.txt'], [], 400],
-            'Und mit absolutem Pfad auch nicht' =>
-                [['aktion' => 'holen', 'pfad' => '/etc/passwd'], [], 400],
-        ] as $was => [$rumpf, $abwandlung, $erwartet]) {
-            is($erwartet, empfaenger_lauf($platz, $rumpf, $schluessel, $abwandlung)['status'], $was);
-        }
-
-        ok(empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel, ['einmal' => $einmal])['ok'],
-            'Ein Einmalwert geht einmal durch');
-        is(409, empfaenger_lauf($platz, ['aktion' => 'hallo'], $schluessel, ['einmal' => $einmal])['status'],
-            'Und kein zweites Mal');
-
-        // Symlink nach draussen.
-        $draussen = sys_get_temp_dir() . '/wa-draussen-' . bin2hex(random_bytes(4));
-        mkdir($draussen, 0777, true);
-        file_put_contents($draussen . '/geheim.txt', 'NICHT HERAUSGEBEN');
-        symlink($draussen . '/geheim.txt', $platz['ordner'] . '/tuer.txt');
-
-        $tuer = empfaenger_lauf($platz, ['aktion' => 'holen', 'pfad' => 'tuer.txt'], $schluessel);
-
-        ok(!$tuer['ok'], 'Ein Symlink gibt nichts her');
-        ok(!in_array('tuer.txt', array_column(
-            (array) (empfaenger_lauf($platz, ['aktion' => 'liste'], $schluessel)['daten']['dateien'] ?? []),
-            'pfad'
-        ), true), 'Und wird auch nicht aufgelistet');
-
-        @unlink($draussen . '/geheim.txt');
-        @rmdir($draussen);
-    } finally {
-        empfaenger_ende($platz);
-    }
-
-    // Und ohne eingesetzten Schluessel tut sie gar nichts. Eine Datei,
-    // die jeden hereinliesse, weil beim Ausliefern etwas schiefging,
-    // waere schlimmer als keine.
-    $roh = (string) file_get_contents(
-        dirname(__DIR__) . '/public_html/app/Kit/site/php/wa-dateien.php'
-    );
-
-    ok(str_contains($roh, '%%SCHLUESSEL%%'), 'Die Vorlage hat einen Platzhalter');
-    ok(str_contains($roh, "str_contains(SCHLUESSEL, '%%')"),
-        'Und ein nicht eingesetzter Platzhalter sperrt sie zu');
-});
-
-// ==================================================================
-test('Der Weg ueber HTTPS steht oben und sagt, woran er ist', function (): void {
-    // Er war ein zugeklappter Notausgang unter der Ueberschrift "FTP
-    // kommt nicht durch?". Das stimmt nicht mehr: Wo die Datenverbindung
-    // verworfen wird, ist er nicht die Ausnahme, sondern der Weg. Also
-    // steht er zuoberst - und sagt von selbst, ob er benutzbar ist.
-    $bauen = static function (array $projekt, array $empfang): string {
-        return \WebAtze\Core\View::partial('admin/deploy', [
-            'project' => ['id' => 7, 'name' => 'Probe', 'status' => 'draft', 'brief' => '{}'] + $projekt,
-            'target' => null,
-            'builds' => [],
-            'job' => null,
-            'brief' => [],
-            'gefunden' => [],
-            'empfang' => $empfang,
-            'hostingAccounts' => [],
-        ]);
-    };
-
-    $ohneAdresse = $bauen([], []);
-    $frisch = $bauen(['domain' => 'kunde.ch'], []);
-    $liegt = $bauen(['domain' => 'kunde.ch'], ['ok' => true, 'error' => '', 'zeit' => '05.09.2026 14:12']);
-    $fehlt = $bauen(['domain' => 'kunde.ch'], [
-        'ok' => false,
-        'error' => 'Unter dieser Adresse liegt keine Empfangsdatei (404).',
-        'zeit' => '05.09.2026 14:12',
-    ]);
-
-    // Zuoberst heisst zuoberst: vor der FTP-Tafel, nicht darunter.
-    ok(strpos($frisch, 'Website hochladen und holen')
-        < strpos($frisch, 'Derselbe Weg über FTP'),
-        'Der Weg ueber HTTPS steht vor dem ueber FTP');
-
-    // Die drei Zustaende der Statuszeile.
-    ok(str_contains($ohneAdresse, 'keine Adresse'), 'Ohne Adresse sagt er das');
-    ok(str_contains($ohneAdresse, '/websites/7'), 'Und wo sie einzutragen ist');
-    ok(str_contains($ohneAdresse, 'disabled'), 'Und laesst sich nicht bedienen');
-
-    ok(str_contains($frisch, 'noch nicht nachgesehen'), 'Frisch heisst: noch nicht nachgesehen');
-    ok(!str_contains($frisch, 'liegt bereit'), 'Und behauptet nichts anderes');
-
-    ok(str_contains($liegt, 'liegt bereit'), 'Liegt er, steht das da');
-    ok(str_contains($liegt, '05.09.2026 14:12'), 'Mit dem Zeitpunkt der Messung');
-    ok(str_contains($fehlt, 'nicht da'), 'Fehlt er, steht das da');
-    ok(str_contains($fehlt, 'keine Empfangsdatei'), 'Samt dem gemessenen Grund');
-
-    // Die drei Handgriffe stehen offen, solange sie noetig sind - und
-    // sind aus dem Weg, sobald sie getan sind.
-    ok(str_contains($frisch, '<details class="wa-help" open>'), 'Die Anleitung steht offen');
-    ok(!str_contains($liegt, '<details class="wa-help" open>'), 'Und klappt zu, wenn er liegt');
-
-    // Entfernen nur, wenn es etwas zu entfernen gibt: Ein Knopf, der
-    // nichts bewirkt, verspricht eine Wirkung.
-    ok(str_contains($liegt, '/empfaenger/weg'), 'Entfernen gibt es, wenn er liegt');
-    ok(!str_contains($frisch, '/empfaenger/weg'), 'Und nicht, wenn er nicht liegt');
-
-    // Beide Richtungen, beide ueber HTTPS.
-    foreach (['/projekt/7/archiv-bruecke', '/projekt/7/stand-bruecke', '/projekt/7/empfaenger/probe',
-              '/projekt/7/empfaenger'] as $ziel) {
-        ok(str_contains($liegt, $ziel), 'Die Seite fuehrt zu ' . $ziel);
-    }
-
-    // Das Haekchen ist da und aus: Wegraeumen bleibt die Vorgabe.
-    ok(substr_count($liegt, 'name="liegenlassen"') === 2,
-        'Beide Richtungen koennen den Empfaenger liegen lassen');
-    ok(!str_contains($liegt, 'name="liegenlassen" value="1" checked'),
-        'Aber nicht von selbst');
-
-    // Und die Adressen dahinter gibt es wirklich.
-    $router = new Router();
-    \WebAtze\Core\Routes::register($router);
-
-    $basis = '/' . trim((string) \WebAtze\Core\Config::get('create_path', 'create'), '/');
-
-    foreach ([
-        ['POST', '/projekt/7/archiv-bruecke', 'DeployController@uploadUeberBruecke'],
-        ['POST', '/projekt/7/stand-bruecke', 'DeployController@pullLiveBruecke'],
-        ['POST', '/projekt/7/empfaenger/probe', 'DeployController@empfangProbe'],
-        ['POST', '/projekt/7/empfaenger/weg', 'DeployController@empfangWeg'],
-        ['GET', '/projekt/7/empfaenger', 'DeployController@empfangsdatei'],
-    ] as [$methode, $pfad, $ziel]) {
-        is($ziel, route($router, $methode, $basis . $pfad), $pfad . ' fuehrt zum richtigen Ziel');
-    }
-
-    // Der Rueckweg ist ein eigener Auftrag - sonst liefe er im
-    // Web-Request und der Browser braeche ab, waehrend er weiterlaeuft.
-    $pipeline = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Pipeline.php');
-
-    ok(str_contains($pipeline, "'stand-per-bruecke' => self::pullLive(\$job, \$budget, 'https')"),
-        'Es gibt einen Auftrag fuer den Stand ueber HTTPS');
-
-    // Und er teilt sich alles Weitere mit dem FTP-Weg: dasselbe Archiv,
-    // dieselbe Zeile in der Paketliste, dasselbe Aufraeumen. Zwei
-    // getrennte Fassungen davon waeren zwei Wahrheiten.
-    $exporter = new ReflectionMethod(\WebAtze\Build\ZipExporter::class, 'pullLive');
-    $namen = array_map(static fn (ReflectionParameter $p): string => $p->getName(),
-        $exporter->getParameters());
-
-    ok(in_array('weg', $namen, true), 'pullLive nimmt den Weg als Angabe entgegen');
-    ok(in_array('liegenLassen', $namen, true), 'Und weiss, ob der Empfaenger liegen bleibt');
-});
-
-// ==================================================================
-test('Der Ausgangstest trennt die eigene Sperre von der fremden', function (): void {
-    // Die Frage, die sich am Kundenserver nie beantworten liess:
-    // Scheitert dort die Datenverbindung, kann die Ursache eingehend bei
-    // ihm liegen - oder ausgehend bei uns. Von einem Endpunkt aus sieht
-    // beides gleich aus.
-    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Build/Ftp.php');
-
-    ok(str_contains($quelle, 'public static function ausgangsprobe()'),
-        'Es gibt eine Probe an einem fremden Ziel');
-    ok(str_contains($quelle, "private const FREMDE = ["),
-        'Mit mehr als einem Server, damit einer ausfallen darf');
-    ok(str_contains($quelle, '$bisPort21'),
-        'Sie unterscheidet "gar nicht hinaus" von "angemeldet, keine Daten"');
-    ok(str_contains($quelle, 'TIMEOUT_PROBE'),
-        'Und haelt die Seite nicht eine halbe Minute an');
-
-    // Sie darf nie werfen - auch nicht dort, wo nichts erreichbar ist.
-    $ergebnis = \WebAtze\Build\Ftp::ausgangsprobe();
-
-    ok(isset($ergebnis['ok'], $ergebnis['satz'], $ergebnis['details']),
-        'Sie liefert immer ein Ergebnis statt einer Ausnahme');
-    ok($ergebnis['satz'] !== '', 'Und immer einen Satz dazu');
 });
 
 // ==================================================================

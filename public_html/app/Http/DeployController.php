@@ -4,11 +4,22 @@ declare(strict_types=1);
 
 namespace WebAtze\Http;
 
-use WebAtze\Build\{FtpDeployer, ZipExporter};
+use WebAtze\Build\{Uebernahme, ZipExporter, Zugang};
 use WebAtze\Core\{Audit, Config, Crypto, Db, Jobs, Logger, Request, Response, Session, View};
 
 /**
- * Paket erzeugen, herunterladen und die Website hochladen.
+ * Der Stand herein, das Paket hinaus.
+ *
+ * Von hier aus geht nichts mehr auf den Kundenserver. Drei Wege dorthin
+ * waren durchgemessen und alle drei tot - FTP, eine Empfangsdatei über
+ * HTTPS, eine dauerhafte Leseschnittstelle. Von einem Hosting zum
+ * anderen kommt nichts durch.
+ *
+ * Also übernimmt der Mensch die Übertragung mit seinem eigenen
+ * FTP-Programm, und WebAtze ist die Werkstatt dazwischen: Archiv
+ * hochladen, auspacken, bearbeiten, Paket herunterladen. Die
+ * Zugangsdaten bleiben trotzdem hier - zum Nachschlagen, wenn FileZilla
+ * danach fragt.
  */
 final class DeployController
 {
@@ -42,13 +53,10 @@ final class DeployController
                 'builds' => ZipExporter::listFor((int) $project['id']),
                 'job' => Jobs::activeFor((int) $project['id']),
                 'brief' => json_decode((string) $project['brief'], true) ?: [],
-                // Was der letzte Verbindungstest dort gefunden hat.
-                'gefunden' => (array) Session::get('ftp_ordner_' . (int) $project['id'], []),
-                // Und was die letzte Probe ueber den Empfaenger sagt.
-                // Bewusst aus der Sitzung und nicht frisch gemessen:
-                // Eine Anfrage ueber die Leitung darf keinen
-                // Seitenaufbau aufhalten.
-                'empfang' => (array) Session::get('empfang_' . (int) $project['id'], []),
+                // Liegt ein uebernommener Stand bereit?
+                'uebernommen' => Uebernahme::vorhanden($project),
+                // Gibt es etwas, das noch nicht heruntergeladen wurde?
+                'offen' => \WebAtze\Domain\Websites::offeneAenderung($project),
                 // Der gemeinsame Zugang: Alle Websites liegen auf
                 // demselben Konto, also gehoert er hier zur Auswahl.
                 'hostingAccounts' => \WebAtze\Domain\HostingAccount::all(),
@@ -99,6 +107,12 @@ final class DeployController
 
         Audit::log('project.download', (string) $project['name'], ['datei' => basename($path)], $request);
 
+        // Ab hier gilt: Was danach geaendert wird, ist beim Kunden noch
+        // nicht angekommen. Das ist die einzige Stelle, an der WebAtze
+        // ueberhaupt erfaehrt, dass ein Stand das Haus verlassen hat -
+        // die Uebertragung selbst sieht es ja nicht mehr.
+        Db::update('projects', ['downloaded_at' => Db::now()], 'id = :id', ['id' => (int) $project['id']]);
+
         return Response::file($path, 'application/zip', true, basename($path))
             ->noCache()
             ->noIndex();
@@ -128,7 +142,7 @@ final class DeployController
             return $this->back($project);
         }
 
-        FtpDeployer::saveTarget((int) $project['id'], [
+        Zugang::saveTarget((int) $project['id'], [
             'protocol' => $protocol,
             'host' => $request->input('host'),
             'port' => $port,
@@ -143,418 +157,31 @@ final class DeployController
             'protokoll' => $protocol,
         ], $request);
 
-        Session::flash('success', 'Zugangsdaten gespeichert. Am besten gleich die Verbindung testen.');
+        Session::flash('success', 'Zugangsdaten gespeichert. Sie stehen hier zum Nachschlagen - '
+            . 'übertragen wirst du mit deinem eigenen FTP-Programm.');
 
         return $this->back($project);
     }
 
     /**
-     * Kann dieser Server überhaupt FTP?
+     * Den Stand vom Kunden entgegennehmen.
      *
-     * Die Frage, die sich am Kundenserver nie beantworten liess:
-     * Scheitert dort die Datenverbindung, kann die Ursache eingehend
-     * bei ihm liegen - oder ausgehend bei uns. Von einem Endpunkt aus
-     * sieht beides gleich aus. Diese Probe fragt dasselbe an einem
-     * fremden Ziel und trennt die beiden Fälle.
+     * Du holst die Website mit deinem FTP-Programm herunter und lädst
+     * sie hier als ZIP hoch. Ausgepackt wird nach
+     * `storage/projects/<slug>/live` - ausserhalb des Web-Ordners.
+     *
+     * Das war der Einwand, der das Auspacken bisher verhindert hat:
+     * Fremde PHP-Dateien auf dem eigenen Webserver sind eine Hintertür.
+     * Dorthin führt kein Weg, der etwas ausführen würde - ausgeliefert
+     * wird nur über die Vorschau, und die schiebt Bytes mit einer festen
+     * Typenliste.
      */
-    public function ausgang(Request $request): Response
+    public function uebernehmen(Request $request): Response
     {
-        $project = ProjectController::find($request->paramInt('id'));
-
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        try {
-            $ergebnis = \WebAtze\Build\Ftp::ausgangsprobe();
-        } catch (\Throwable $e) {
-            Logger::exception($e);
-            Session::flash('error', 'Die Probe ist abgestuerzt. Bitte melde dich.');
-
-            return $this->back($project);
-        }
-
-        Session::flash($ergebnis['ok'] ? 'success' : 'warning', $ergebnis['satz']);
-        Session::put('ftp_ordner_' . (int) $project['id'], [
-            'details' => $ergebnis['details'],
-        ]);
-
-        return $this->back($project);
+        return $this->archivAnnehmen($request, 'zip-uebernehmen');
     }
 
-    /**
-     * Die Empfangsdatei zum Hinlegen.
-     *
-     * Sie wird einmal von Hand auf die Kundenwebsite geladen - mit dem
-     * FTP-Programm, das vom eigenen Rechner aus funktioniert. Danach
-     * geht alles über HTTPS.
-     */
-    public function empfangsdatei(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        $inhalt = \WebAtze\Build\Empfang::datei((int) $project['id']);
-
-        if ($inhalt === '') {
-            Session::flash('error', 'Die Vorlage für den Empfänger fehlt im Paket.');
-
-            return $this->back($project);
-        }
-
-        Audit::log('empfang.datei', (string) $project['name'], [], $request);
-
-        // Bewusst als text/plain und mit .txt am Namen: Eine PHP-Datei,
-        // die der Browser direkt herunterlaedt, ist auf manchen Systemen
-        // eine Warnung wert - und beim Hochladen wird sie ohnehin
-        // umbenannt. Der Hinweis dazu steht auf der Seite.
-        return Response::text($inhalt)
-            ->header('Content-Disposition', 'attachment; filename="'
-                . \WebAtze\Build\Empfang::DATEI . '.txt"')
-            ->noCache()
-            ->noIndex();
-    }
-
-    /**
-     * Nachsehen, ob der Empfänger schon dort liegt.
-     *
-     * Auf Knopfdruck und nicht beim Seitenaufbau: Es ist eine Anfrage
-     * über die Leitung, und die kann dauern. Das Ergebnis bleibt in der
-     * Sitzung stehen, genau wie das des Verbindungstests - dann sagt
-     * die Seite auch beim nächsten Aufruf noch, was zuletzt gemessen
-     * wurde, und wann.
-     */
-    public function empfangProbe(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        try {
-            $ergebnis = \WebAtze\Build\Empfang::erreichbar($project);
-        } catch (\Throwable $e) {
-            Logger::exception($e);
-            Session::flash('error', 'Die Probe ist abgestürzt. Bitte melde dich.');
-
-            return $this->back($project);
-        }
-
-        $this->empfangMerken(
-            (int) $project['id'],
-            $ergebnis['ok'],
-            (string) $ergebnis['error'],
-            (string) ($ergebnis['art'] ?? '')
-        );
-
-        Session::flash($ergebnis['ok'] ? 'success' : 'warning', match (true) {
-            ($ergebnis['art'] ?? '') === 'dauerhaft' =>
-                'Die Leseschnittstelle liegt dort. Stand holen geht ohne weiteres Zutun.',
-            $ergebnis['ok'] =>
-                'Der Empfänger liegt bereit. Das ZIP kann hinauf.',
-            default =>
-                'Es meldet sich keine Schnittstelle: ' . $ergebnis['error'],
-        });
-
-        return $this->back($project);
-    }
-
-    /**
-     * Die dauerhafte Leseschnittstelle sperren.
-     *
-     * Nicht loeschen - dazu braeuchte es Schreibzugriff, und den hat sie
-     * bewusst nicht. Stattdessen bekommt sie einen neuen Schluessel: Die
-     * Datei auf der Website kennt ihn nicht und weist von da an jede
-     * Anfrage ab. Wer sie ganz weghaben will, loescht sie mit dem
-     * FTP-Programm - sie ist eine gewoehnliche Datei.
-     */
-    public function leseZugangSperren(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        \WebAtze\Build\Empfang::neuerLeseschluessel((int) $project['id']);
-        $this->empfangMerken((int) $project['id'], false, '', '');
-
-        Audit::log('empfang.lesezugang_gesperrt', (string) $project['name'], [], $request);
-
-        Session::flash('success',
-            'Die Leseschnittstelle ist gesperrt. Die Datei liegt noch dort, nimmt aber '
-            . 'nichts mehr an. Beim nächsten Hochladen kommt eine mit neuem Schlüssel mit.');
-
-        return $this->back($project);
-    }
-
-    /**
-     * Den Empfänger jetzt entfernen.
-     *
-     * Das Gegenstück zum Häkchen "liegen lassen". Ohne diesen Knopf
-     * wäre das Liegenlassen eine Einbahnstrasse bis zum Ablauf nach 24
-     * Stunden - und eine Schreibstelle, die man nicht mehr zumachen
-     * kann, lässt man besser gar nicht erst offen.
-     */
-    public function empfangWeg(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        try {
-            $ergebnis = \WebAtze\Build\Empfang::weg($project);
-        } catch (\Throwable $e) {
-            Logger::exception($e);
-            Session::flash('error', 'Das Entfernen ist abgestürzt. Bitte melde dich.');
-
-            return $this->back($project);
-        }
-
-        // Nach dem Entfernen liegt er nicht mehr - und wenn er sich
-        // nicht meldet, liegt er auch nicht mehr. Beides ist "weg".
-        $this->empfangMerken((int) $project['id'], false, '');
-
-        Audit::log('empfang.entfernt', (string) $project['name'], [
-            'geklappt' => $ergebnis['ok'],
-        ], $request);
-
-        Session::flash($ergebnis['ok'] ? 'success' : 'warning', $ergebnis['ok']
-            ? 'Der Empfänger ist entfernt.'
-            : 'Er hat sich nicht gemeldet: ' . $ergebnis['error']
-              . ' Falls er noch liegt, verschwindet er spätestens nach 24 Stunden von selbst.');
-
-        return $this->back($project);
-    }
-
-    /** Ein hochgeladenes Archiv über HTTPS schicken statt über FTP. */
-    public function uploadUeberBruecke(Request $request): Response
-    {
-        return $this->archivAnnehmen($request, 'zip-per-bruecke');
-    }
-
-    /**
-     * Den aktuellen Stand über HTTPS holen statt über FTP.
-     *
-     * Derselbe Live-Stand wie beim FTP-Weg, dieselbe Zeile in der
-     * Paketliste - nur eine andere Leitung. Ohne das wäre "FTP
-     * vergessen" ein halber Weg: hinauf ja, herunter nicht.
-     */
-    public function pullLiveBruecke(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        if (Jobs::activeFor((int) $project['id']) !== null) {
-            Session::flash('warning', 'Für dieses Projekt läuft bereits ein Auftrag.');
-
-            return $this->back($project);
-        }
-
-        if (trim((string) ($project['domain'] ?? '')) === '') {
-            Session::flash('error', 'Ohne Adresse der Website weiss ich nicht, wen ich anrufen soll.');
-
-            return $this->back($project);
-        }
-
-        Jobs::enqueue('stand-per-bruecke', [
-            'liegenlassen' => $request->bool('liegenlassen'),
-        ], (int) $project['id']);
-        Jobs::nudge();
-
-        Audit::log('project.pull.started', (string) $project['name'], ['weg' => 'https'], $request);
-        Session::flash('success', 'Der Stand wird über HTTPS geholt. Das dauert je nach Grösse eine Weile.');
-
-        return $this->back($project);
-    }
-
-    /** Was zuletzt über die Schnittstelle gemessen wurde, für die Ansicht. */
-    private function empfangMerken(int $projectId, bool $ok, string $grund, string $art = ''): void
-    {
-        Session::put('empfang_' . $projectId, [
-            'ok' => $ok,
-            'art' => $art,
-            'error' => $grund,
-            'zeit' => date('d.m.Y H:i'),
-        ]);
-    }
-
-    /** Verbindung prüfen, ohne etwas hochzuladen. */
-    public function testTarget(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        // Auch der Test selbst darf nicht abstuerzen. Ein Fehler 500 sagt
-        // dem Betreiber nichts - und genau der kam frueher, wenn dem
-        // Server die FTP-Erweiterung fehlte.
-        try {
-            $result = FtpDeployer::test((int) $project['id']);
-        } catch (\Throwable $e) {
-            Logger::exception($e);
-
-            Session::flash('error',
-                'Der Verbindungstest ist abgestuerzt. Das sollte nicht passieren - '
-                . 'bitte melde dich. Versuch es solange mit SFTP auf Port 22.');
-
-            return $this->back($project);
-        }
-
-        // Gruen erst, wenn jede Stufe gruen ist.
-        //
-        // "ok" beantwortet nur die Frage, ob der Zielordner da ist -
-        // absichtlich, denn ein Zugang, der lesen aber nicht schreiben
-        // darf, taugt zum Stand-Holen. Als Farbe der Meldung genommen
-        // ergab das aber eine gruene Erfolgsmeldung ueber einer Kette
-        // mit einem roten Kreuz darin. Wer das sieht, glaubt der Farbe
-        // und sucht den Fehler spaeter woanders.
-        $alleGruen = true;
-
-        foreach ((array) ($result['stufen'] ?? []) as $stufe) {
-            if (!($stufe['ok'] ?? false)) {
-                $alleGruen = false;
-                break;
-            }
-        }
-
-        Session::flash(
-            $result['ok'] ? ($alleGruen ? 'success' : 'warning') : 'error',
-            $result['message']
-        );
-
-        // Die gefundenen Verzeichnisse merken, damit die Seite sie
-        // anbieten kann. Bei einer Subdomain ist das der Unterschied
-        // zwischen Raten und Auswaehlen.
-        Session::put('ftp_ordner_' . (int) $project['id'], [
-            'ordner' => (array) ($result['ordner'] ?? []),
-            'vorschlag' => (string) ($result['vorschlag'] ?? ''),
-            // Der Servername, der auflöst - zum Anklicken statt zum
-            // Abtippen.
-            'vorschlagHost' => (string) ($result['vorschlagHost'] ?? ''),
-            // Was tatsaechlich gemessen wurde - ein Satz steht in der
-            // Meldung, die Einzelheiten liegen aufklappbar darunter.
-            'details' => (array) ($result['details'] ?? []),
-            // Die einzelnen Stufen: Servername, Verbindung, Anmeldung,
-            // Passivmodus, Startordner, Inhalt, Zielordner, Schreibprobe.
-            // Die erste rote Stufe ist die Diagnose - und dass die
-            // gruenen davor sitzen, ist die halbe Antwort.
-            'stufen' => (array) ($result['stufen'] ?? []),
-            'zeit' => date('d.m.Y H:i'),
-        ]);
-
-        return $this->back($project);
-    }
-
-    /** Die Website hochladen. */
-    public function deploy(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        if (Jobs::activeFor((int) $project['id']) !== null) {
-            Session::flash('warning', 'Für dieses Projekt läuft bereits ein Auftrag.');
-            return $this->back($project);
-        }
-
-        $dist = STORAGE_DIR . '/projects/' . (string) $project['slug'] . '/dist';
-        if (!is_dir($dist)) {
-            Session::flash('error', 'Die Website muss zuerst gebaut werden.');
-            return $this->back($project);
-        }
-
-        Jobs::enqueue('deploy', [], (int) $project['id']);
-        Jobs::nudge();
-
-        Audit::log('deploy.started', (string) $project['name'], [], $request);
-        Session::flash('success', 'Der Upload läuft. Der Fortschritt erscheint gleich hier.');
-
-        return $this->back($project);
-    }
-
-    /**
-     * Den aktuellen Stand vom Server des Kunden holen.
-     *
-     * Der Unterschied zum Paket daneben ist der Punkt: Das Paket ist
-     * das, was hier zuletzt gebaut wurde. Was tatsächlich beim Kunden
-     * liegt, ist etwas anderes, sobald dort jemand etwas geändert hat –
-     * hochgeladene Bilder, eingegangene Anfragen, im Backend
-     * umgeschriebene Texte. Das steht in keinem gebauten Paket.
-     */
-    public function pullLive(Request $request): Response
-    {
-        $project = ProjectController::find($request->paramInt('id'));
-
-        if ($project === null) {
-            return Response::notFound();
-        }
-
-        if (Jobs::activeFor((int) $project['id']) !== null) {
-            Session::flash('warning', 'Für dieses Projekt läuft bereits ein Auftrag.');
-
-            return $this->back($project);
-        }
-
-        $ziel = Db::first(
-            'SELECT id FROM deploy_targets WHERE project_id = :p LIMIT 1',
-            ['p' => (int) $project['id']]
-        );
-
-        if ($ziel === null) {
-            Session::flash(
-                'error',
-                'Für diese Website sind keine Zugangsdaten hinterlegt. '
-                . 'Ohne sie lässt sich nicht nachsehen, was dort liegt.'
-            );
-
-            return $this->back($project);
-        }
-
-        Jobs::enqueue('live', [], (int) $project['id']);
-        Jobs::nudge();
-
-        Audit::log('project.pull.started', (string) $project['name'], [], $request);
-        Session::flash('success', 'Der Stand wird geholt. Das dauert je nach Grösse eine Weile.');
-
-        return $this->back($project);
-    }
-
-    /**
-     * Ein fertiges ZIP entgegennehmen und aufs FTP schieben.
-     *
-     * Der Weg ohne den eingebauten Generator: Auftragstext kopieren,
-     * die Website anderswo bauen lassen, das Ergebnis hier hochladen.
-     *
-     * Das Archiv wird bei uns nie ausgepackt – jeder Eintrag geht als
-     * Datenstrom direkt aus dem ZIP auf das FTP. Eine Kundenwebsite
-     * enthält PHP, und ausgepackte fremde PHP-Dateien auf dem eigenen
-     * Webserver sind eine Hintertür, ganz gleich wie gut der Ordner
-     * gesperrt ist.
-     */
-    public function uploadZip(Request $request): Response
-    {
-        return $this->archivAnnehmen($request, 'zip-hochladen');
-    }
-
-    /**
-     * Ein Archiv entgegennehmen und als Auftrag einreihen.
-     *
-     * Zwei Wege, ein Rumpf: Ob es danach ueber FTP oder ueber HTTPS
-     * hinausgeht, entscheidet allein der Auftragstyp - alles davor ist
-     * dasselbe, und das soll es auch bleiben.
-     */
+    /** Ein Archiv entgegennehmen und als Auftrag einreihen. */
     private function archivAnnehmen(Request $request, string $typ): Response
     {
         $project = ProjectController::find($request->paramInt('id'));
@@ -565,27 +192,6 @@ final class DeployController
 
         if (Jobs::activeFor((int) $project['id']) !== null) {
             Session::flash('warning', 'Für dieses Projekt läuft bereits ein Auftrag.');
-
-            return $this->back($project);
-        }
-
-        // Der Weg ueber HTTPS braucht keine FTP-Zugangsdaten - er
-        // braucht die Adresse der Website und die Empfangsdatei darauf.
-        if ($typ === 'zip-hochladen') {
-            $ziel = Db::first(
-                'SELECT id FROM deploy_targets WHERE project_id = :p LIMIT 1',
-                ['p' => (int) $project['id']]
-            );
-
-            if ($ziel === null) {
-                Session::flash('error',
-                    'Ohne Zugangsdaten gibt es kein Ziel. Trage sie unten ein und teste die Verbindung.');
-
-                return $this->back($project);
-            }
-        } elseif (trim((string) ($project['domain'] ?? '')) === '') {
-            Session::flash('error',
-                'Ohne Adresse der Website weiss ich nicht, wen ich anrufen soll.');
 
             return $this->back($project);
         }
@@ -632,23 +238,15 @@ final class DeployController
             return $this->back($project);
         }
 
-        Jobs::enqueue($typ, [
-            'zip' => $pfad,
-            // Nur der Weg ueber HTTPS kennt das - beim FTP-Weg liegt
-            // nichts herum, das man liegen lassen koennte.
-            'liegenlassen' => $request->bool('liegenlassen'),
-            // Es ist die Website des Kunden: Wer die dauerhafte
-            // Leseschnittstelle nicht will, hakt sie ab.
-            'lesezugang' => $request->bool('lesezugang'),
-        ], (int) $project['id']);
+        Jobs::enqueue($typ, ['zip' => $pfad], (int) $project['id']);
         Jobs::nudge();
 
-        Audit::log('deploy.zip.started', (string) $project['name'], [
+        Audit::log('project.uebernahme.started', (string) $project['name'], [
             'bytes' => $groesse,
         ], $request);
 
         Session::flash('success',
-            'Das Archiv wird hochgeladen. Der Fortschritt erscheint gleich hier.');
+            'Das Archiv wird ausgepackt. Der Fortschritt erscheint gleich hier.');
 
         return $this->back($project);
     }

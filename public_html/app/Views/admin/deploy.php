@@ -1,6 +1,6 @@
 <?php
 /**
- * Veröffentlichen: Paket schnüren, herunterladen, hochladen.
+ * Veröffentlichen: Stand hereinholen, Paket herausgeben.
  *
  * Das Paket entsteht immer – auch dann, wenn kein FTP-Zugang hinterlegt
  * ist. Es ist der verlässliche Weg, eine fertige Website in die Hand zu
@@ -10,7 +10,7 @@
 use WebAtze\Core\{Config, Csrf};
 
 /** @var array $project @var array|null $target @var array $builds */
-/** @var array|null $job @var array $brief @var array $gefunden */
+/** @var array|null $job @var array $brief */
 
 $base = '/' . trim((string) Config::get('create_path', 'create'), '/');
 $id = (int) $project['id'];
@@ -28,17 +28,18 @@ $latest = $builds[0] ?? null;
 ?>
 
 <p class="wa-intro">
-    Jede fertige Website liegt als Paket bereit. Hinauf und wieder herunter geht sie
-    über HTTPS – dafür liegt einmal eine Empfangsdatei auf der Website des Kunden.
-    Wo FTP durchkommt, geht es auch darüber; die Zugangsdaten dafür stehen ganz unten.
+    Du holst, WebAtze arbeitet, du bringst. Die Website mit deinem FTP-Programm
+    herunterladen und hier als ZIP hochladen; bearbeiten und ansehen; das Paket
+    herunterladen und selbst wieder hinaufladen. Die Zugangsdaten dafür stehen
+    ganz unten &ndash; zum Nachschlagen.
 </p>
 
 <?php if ($job !== null): ?>
     <section class="wa-panel">
         <div class="wa-panel__head"><h2 class="wa-panel__title">Läuft gerade</h2></div>
-        <div class="wa-job" data-job-watch="<?= (int) $job['id'] ?>" data-job-reload="1">
+        <div class="wa-job" data-job-watch="<?= (int) $job['id'] ?>">
             <div class="wa-job__row">
-                <strong><?= (string) $job['type'] === 'deploy' ? 'Website wird hochgeladen' : 'Auftrag läuft' ?></strong>
+                <strong><?= (string) $job['type'] === 'zip-uebernehmen' ? 'Der Stand wird übernommen' : 'Auftrag läuft' ?></strong>
                 <span class="wa-job__value" data-job-label><?= (int) $job['progress'] ?>%</span>
             </div>
             <div class="wa-progress">
@@ -54,295 +55,106 @@ $latest = $builds[0] ?? null;
 
 <?php
 /**
- * Der Weg über HTTPS - und damit ab jetzt der normale Weg.
+ * Der Stand herein, das Paket hinaus.
  *
- * FTP braucht zwei Verbindungen: eine für die Befehle und für jede
- * Datei eine zweite auf einem hohen Port. Genau die zweite wird auf
- * geteiltem Hosting gern verworfen, und dann hilft kein Einstellen
- * mehr. HTTPS braucht nur eine, auf Port 443, und die ist von jedem
- * Webserver aus offen.
+ * Von hier aus geht nichts mehr auf den Kundenserver. Drei Wege dorthin
+ * waren durchgemessen und alle drei tot: FTP mit verworfener
+ * Datenverbindung, eine Empfangsdatei über HTTPS, eine dauerhafte
+ * Leseschnittstelle. Von einem Hosting zum anderen kommt nichts durch -
+ * vom eigenen Rechner aus schon.
  *
- * Der zweite Vorteil steht in keiner Anleitung und ist der grössere:
- * Der Empfänger arbeitet immer in dem Ordner, in dem er selbst liegt.
- * Die Frage nach dem richtigen Verzeichnis - "/", "/public_html",
- * "/public_html/kunde.ch" - stellt sich hier gar nicht.
- *
- * Der Stand des Empfängers wird nicht beim Seitenaufbau gemessen: Das
- * ist eine Anfrage über die Leitung, und eine Seite, die deswegen
- * hängt, ist ein schlechter Tausch für eine Zeile Auskunft. Also auf
- * Knopfdruck, mit Zeitstempel daneben.
+ * Also die ehrliche Reihenfolge: Du holst, WebAtze arbeitet, du bringst.
  */
-$adresse = trim((string) ($project['domain'] ?? ''));
-$stand = (array) ($empfang ?? []);
-$gemessen = array_key_exists('ok', $stand);
-$liegt = $gemessen && (bool) $stand['ok'];
-$art = (string) ($stand['art'] ?? '');
-$dauerhaft = $liegt && $art === 'dauerhaft';
-$offen = $adresse !== '';
+$uebernommen = (bool) ($uebernommen ?? false);
+$offen = (bool) ($offen ?? false);
+$neustes = $builds[0] ?? null;
 ?>
-<section class="wa-panel wa-transfer">
+<section class="wa-panel">
     <div class="wa-panel__head">
-        <h2 class="wa-panel__title">Website hochladen und holen</h2>
+        <h2 class="wa-panel__title">Stand vom Kunden hereinholen</h2>
         <p class="wa-panel__hint">
-            Über HTTPS auf Port 443 &ndash; der Ausgang, der auf jedem Hosting offen ist.
-            <strong>Holen</strong> geht dauerhaft: Beim ersten Hochladen bleibt eine
-            Leseschnittstelle auf der Website liegen, danach braucht es dafür keinen
-            Handgriff mehr. <strong>Hochladen</strong> braucht jedes Mal kurz die
-            Empfangsdatei &ndash; eine Schreibstelle lässt man nicht dauerhaft offen.
+            Mit deinem FTP-Programm die Website herunterladen, hier als ZIP hochladen.
+            Sie wird ausgepackt; ist es eine von WebAtze gebaute Website, stehen ihre
+            Texte und Bilder danach im Editor &ndash; auch die, die der Kunde selbst
+            geändert hat.
         </p>
     </div>
 
     <div class="wa-note">
         <div>
-            <strong>Schnittstelle:</strong>
-            <?php if (!$offen): ?>
-                <span class="wa-badge wa-badge--warn">keine Adresse</span>
-                Diese Website hat keine Adresse hinterlegt &ndash; ohne sie weiss der Weg nicht,
-                wen er anrufen soll.
-                <a href="<?= e($base) ?>/websites/<?= $id ?>">Adresse eintragen</a>
-            <?php elseif ($dauerhaft): ?>
-                <span class="wa-badge wa-badge--ok">Leseschnittstelle liegt dort</span>
-                Stand holen geht ohne weiteres Zutun. Nachgesehen am
-                <?= e((string) ($stand['zeit'] ?? '')) ?> auf <code><?= e($adresse) ?></code>
-            <?php elseif ($liegt): ?>
-                <span class="wa-badge wa-badge--ok">Empfänger liegt bereit</span>
-                nachgesehen am <?= e((string) ($stand['zeit'] ?? '')) ?> auf
-                <code><?= e($adresse) ?></code>
-            <?php elseif ($gemessen): ?>
-                <span class="wa-badge wa-badge--bad">nichts da</span>
-                <?= e((string) ($stand['error'] ?? '')) ?>
-                (nachgesehen am <?= e((string) ($stand['zeit'] ?? '')) ?>)
+            <?php if ($uebernommen): ?>
+                <span class="wa-badge wa-badge--ok">Stand liegt hier</span>
+                Ausgepackt und bereit. Ein neues Archiv ersetzt ihn.
             <?php else: ?>
-                <span class="wa-badge">noch nicht nachgesehen</span>
-                Ob dort etwas liegt, weiss nur ein Anruf.
+                <span class="wa-badge">noch kein Stand</span>
+                Ohne hochgeladenes Archiv arbeitet der Editor mit dem, was hier gebaut wurde.
             <?php endif; ?>
         </div>
     </div>
 
-    <?php if ($offen): ?>
+    <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/uebernehmen"
+          enctype="multipart/form-data" class="wa-form">
+        <?= Csrf::field() ?>
+
+        <label class="wa-label" for="archiv">Archiv der Website (ZIP)</label>
+        <input class="wa-input" type="file" id="archiv" name="archiv"
+               accept=".zip,application/zip">
+        <span class="wa-label__hint">
+            Liegt alles in einem Ordner, wird der weggeschnitten. Höchstens
+            <?= (int) (\WebAtze\Http\DeployController::MAX_ARCHIV_BYTES / 1024 / 1024) ?>&nbsp;MB.
+        </span>
+
         <div class="wa-form__actions">
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/empfaenger/probe">
-                <?= Csrf::field() ?>
-                <button type="submit" class="wa-btn">Nachsehen, was dort liegt</button>
-            </form>
-            <?php /* Jeweils nur, was es zu entfernen gibt. Ein Knopf, der
-                     etwas wegräumt, das nicht da ist, verspricht eine
-                     Wirkung, die er nicht hat. */ ?>
-            <?php if ($dauerhaft): ?>
-                <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/lesezugang/sperren"
-                      data-confirm="Die Leseschnittstelle sperren? Stand holen geht danach nicht mehr ohne FTP.">
-                    <?= Csrf::field() ?>
-                    <button type="submit" class="wa-btn">Leseschnittstelle sperren</button>
-                </form>
-            <?php elseif ($liegt): ?>
-                <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/empfaenger/weg"
-                      data-confirm="Den Empfänger jetzt von der Website entfernen?">
-                    <?= Csrf::field() ?>
-                    <button type="submit" class="wa-btn">Empfänger jetzt entfernen</button>
-                </form>
-            <?php endif; ?>
+            <button type="submit" class="wa-btn wa-btn--primary"
+                    data-confirm="Den Stand aus diesem Archiv übernehmen? Der bisherige Inhalt dieser Website wird ersetzt - eine Fassung bleibt erhalten.">
+                Übernehmen
+            </button>
+            <a class="wa-btn" href="<?= e($base) ?>/editor/<?= $id ?>">Editor öffnen</a>
         </div>
-    <?php endif; ?>
-
-    <?php /* Zugeklappt, sobald er liegt: Dann sind die drei Handgriffe
-             getan und stehen nur noch im Weg. */ ?>
-    <details class="wa-help"<?= $liegt ? '' : ' open' ?>>
-        <summary>Die drei Handgriffe &ndash; einmal pro Website</summary>
-        <div class="wa-help__body">
-            <ol>
-                <li>
-                    <a href="<?= e($base) ?>/projekt/<?= $id ?>/empfaenger">Empfangsdatei herunterladen</a>
-                    &ndash; sie wird als <code>webatze-empfang.php.txt</code> gespeichert.
-                </li>
-                <li>
-                    Mit deinem FTP-Programm vom eigenen Rechner in das Verzeichnis der
-                    Website legen und dabei in <code>webatze-empfang.php</code>
-                    umbenennen (das <code>.txt</code> weg).
-                </li>
-                <li>Hier hochladen &ndash; es geht dann über HTTPS.</li>
-            </ol>
-            <p class="wa-label__hint">
-                Die Empfangsdatei trägt einen eigenen Schlüssel, nimmt nur unterschriebene
-                Anfragen an und <strong>löscht sich nach der Übertragung selbst</strong>
-                &ndash; spätestens aber nach 24 Stunden.
-            </p>
-            <p class="wa-label__hint">
-                Beim Hochladen bleibt <code>wa-dateien.php</code> auf der Website liegen.
-                Sie <strong>liest nur</strong>, gibt Geheimnisse wie
-                <code>config.php</code> nie heraus und lässt sich hier oben jederzeit
-                sperren. Ab dann geht &bdquo;Aktuellen Stand holen&ldquo; ohne jeden
-                weiteren Handgriff &ndash; auch dann, wenn FTP nie durchkommt.
-            </p>
-        </div>
-    </details>
-
-    <div class="wa-grid-2">
-        <div class="wa-field">
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/archiv-bruecke"
-                  enctype="multipart/form-data" class="wa-form">
-                <?= Csrf::field() ?>
-
-                <label class="wa-label" for="archiv-bruecke">Website hochladen (ZIP)</label>
-                <input class="wa-input" type="file" id="archiv-bruecke" name="archiv"
-                       accept=".zip,application/zip"<?= $offen ? '' : ' disabled' ?>>
-                <span class="wa-label__hint">
-                    Das Ergebnis aus dem Auftragstext, so wie es kommt. Liegt alles
-                    in einem Ordner, wird der weggeschnitten &ndash; die Startseite
-                    landet also direkt dort, wo die Empfangsdatei liegt. Höchstens
-                    <?= (int) (\WebAtze\Http\DeployController::MAX_ARCHIV_BYTES / 1024 / 1024) ?>&nbsp;MB.
-                </span>
-
-                <label class="wa-checkbox">
-                    <input type="checkbox" name="liegenlassen" value="1"<?= $offen ? '' : ' disabled' ?>>
-                    <span>Empfänger danach liegen lassen</span>
-                </label>
-
-                <?php /* Vorgehakt, weil es der Sinn der Sache ist - aber es
-                         ist die Website des Kunden, also abwählbar. */ ?>
-                <label class="wa-checkbox">
-                    <input type="checkbox" name="lesezugang" value="1" checked<?= $offen ? '' : ' disabled' ?>>
-                    <span>Leseschnittstelle mitliefern (für „Stand holen“ ohne FTP)</span>
-                </label>
-
-                <div class="wa-form__actions">
-                    <?php if ($offen): ?>
-                        <button type="submit" class="wa-btn wa-btn--primary"
-                                data-confirm="Das Archiv jetzt über HTTPS auf die Website laden? Bestehende Dateien werden überschrieben.">
-                            Hochladen
-                        </button>
-                    <?php else: ?>
-                        <button type="button" class="wa-btn wa-btn--primary" disabled>Hochladen</button>
-                    <?php endif; ?>
-                </div>
-            </form>
-        </div>
-
-        <div class="wa-field">
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/stand-bruecke" class="wa-form">
-                <?= Csrf::field() ?>
-
-                <span class="wa-label">Alle Dateien herunterladen</span>
-                <span class="wa-label__hint">
-                    Holt, was in diesem Moment tatsächlich auf dem Server liegt &ndash;
-                    samt hochgeladener Bilder, eingegangener Anfragen und im Backend
-                    geänderter Texte. Als ZIP, unter &bdquo;Paket&ldquo; zum Herunterladen.
-                </span>
-
-                <label class="wa-checkbox">
-                    <input type="checkbox" name="liegenlassen" value="1"<?= $offen ? '' : ' disabled' ?>>
-                    <span>Empfänger danach liegen lassen</span>
-                </label>
-
-                <div class="wa-form__actions">
-                    <?php if ($offen): ?>
-                        <button type="submit" class="wa-btn">Aktuellen Stand holen</button>
-                    <?php else: ?>
-                        <button type="button" class="wa-btn" disabled>Aktuellen Stand holen</button>
-                    <?php endif; ?>
-                </div>
-            </form>
-        </div>
-    </div>
+    </form>
 </section>
 
-<?php
-/**
- * Derselbe Weg über FTP - für die Server, bei denen er durchkommt.
- *
- * Er steht nicht mehr zuoberst, weil er es bei geteiltem Hosting oft
- * nicht tut: Die zweite Verbindung, die jede Datei braucht, wird
- * verworfen, und dann hilft kein Einstellen mehr. SFTP hängt an
- * denselben Zugangsdaten und ist davon nicht betroffen.
- *
- * Die zwei Knöpfe sind ein Paar: Das eine schiebt eine fertige
- * Website auf den Server, das andere holt, was gerade darauf liegt.
- * Beides braucht nur die Zugangsdaten darunter und nichts sonst –
- * insbesondere keinen Bau hier im Haus.
- *
- * Ohne hinterlegte Zugangsdaten bleiben beide trotzdem stehen, nur
- * stumpf. Ein Knopf, der ganz verschwindet, erklärt nichts: Man sucht
- * ihn dann dort, wo er nie war. Steht er da und sagt „mir fehlen die
- * Zugangsdaten", weiss man in derselben Sekunde, was zu tun ist.
- */
-$bereit = $target !== null;
-?>
-<section class="wa-panel wa-transfer">
+<section class="wa-panel">
     <div class="wa-panel__head">
-        <h2 class="wa-panel__title">Derselbe Weg über FTP oder SFTP</h2>
-        <div class="wa-panel__actions">
-            <?php if (!$bereit): ?>
-                <a class="wa-btn wa-btn--sm" href="#zugang">Zugangsdaten eintragen</a>
-            <?php endif; ?>
-            <?php /* Braucht keine Zugangsdaten: Er fragt, ob dieser Server
-                     ueberhaupt eine FTP-Datenverbindung nach draussen
-                     aufbauen darf. Deshalb steht er hier und nicht bei den
-                     Zugangsdaten - er beantwortet die Frage, bevor man
-                     welche eintraegt. */ ?>
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/ftp/ausgang">
-                <?= Csrf::field() ?>
-                <button type="submit" class="wa-btn wa-btn--sm">
-                    Kann dieser Server überhaupt FTP?
-                </button>
-            </form>
-        </div>
+        <h2 class="wa-panel__title">Website herausgeben</h2>
         <p class="wa-panel__hint">
-            <?php if ($bereit): ?>
-                Beides geht über die Zugangsdaten weiter unten. Für das Hochladen
-                brauchst du kein hier gebautes Paket &ndash; ein fertiges ZIP genügt.
-                Kommt die Datenverbindung nicht durch, nimm den Weg über HTTPS oben.
-            <?php else: ?>
-                Beides braucht die Zugangsdaten zum Server des Kunden. Die stehen
-                weiter unten unter &bdquo;Zugang zum Server des Kunden&ldquo; und
-                fehlen noch &ndash; danach sind beide Knöpfe hier scharf.
-            <?php endif; ?>
+            Ein Paket schnüren, herunterladen, mit deinem FTP-Programm beim Kunden
+            hinaufladen. Das Paket enthält den gebauten Stand &ndash; und alles aus dem
+            übernommenen Archiv, was der Bau nicht selbst erzeugt.
         </p>
     </div>
 
-    <div class="wa-grid-2">
-        <div class="wa-field">
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/archiv"
-                  enctype="multipart/form-data" class="wa-form">
-                <?= Csrf::field() ?>
-
-                <label class="wa-label" for="archiv">Website hochladen (ZIP)</label>
-                <input class="wa-input" type="file" id="archiv" name="archiv"
-                       accept=".zip,application/zip"<?= $bereit ? '' : ' disabled' ?>>
-                <span class="wa-label__hint">
-                    Dasselbe wie oben, nur über FTP &ndash; und in das Verzeichnis,
-                    das bei den Zugangsdaten steht.
-                </span>
-
-                <div class="wa-form__actions">
-                    <?php if ($bereit): ?>
-                        <button type="submit" class="wa-btn"
-                                data-confirm="Das Archiv jetzt über FTP auf den Server des Kunden laden? Bestehende Dateien im Zielverzeichnis werden überschrieben.">
-                            Über FTP hochladen
-                        </button>
-                    <?php else: ?>
-                        <button type="button" class="wa-btn" disabled>Über FTP hochladen</button>
-                    <?php endif; ?>
-                </div>
-            </form>
+    <div class="wa-note">
+        <div>
+            <?php if ($offen): ?>
+                <span class="wa-badge wa-badge--warn">noch nicht heruntergeladen</span>
+                Seit dem letzten Herunterladen wurde hier etwas geändert. Beim Kunden
+                liegt es noch nicht.
+            <?php elseif ((string) ($project['downloaded_at'] ?? '') !== ''): ?>
+                <span class="wa-badge wa-badge--ok">draussen</span>
+                Zuletzt heruntergeladen am
+                <?= e(date('d.m.Y H:i', strtotime((string) $project['downloaded_at']))) ?>.
+            <?php else: ?>
+                <span class="wa-badge">noch nie heruntergeladen</span>
+            <?php endif; ?>
         </div>
+    </div>
 
-        <div class="wa-field">
-            <span class="wa-label">Alle Dateien herunterladen</span>
-            <span class="wa-label__hint">
-                Dasselbe wie oben, nur über FTP statt über HTTPS.
-            </span>
-
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/stand-holen"
-                  class="wa-form">
-                <?= Csrf::field() ?>
-                <div class="wa-form__actions">
-                    <?php if ($bereit): ?>
-                        <button type="submit" class="wa-btn">Stand über FTP holen</button>
-                    <?php else: ?>
-                        <button type="button" class="wa-btn" disabled>Stand über FTP holen</button>
-                    <?php endif; ?>
-                </div>
-            </form>
-        </div>
+    <div class="wa-form__actions">
+        <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/zip">
+            <?= Csrf::field() ?>
+            <button type="submit" class="wa-btn">Neues Paket erstellen</button>
+        </form>
+        <?php if ($neustes !== null): ?>
+            <a class="wa-btn wa-btn--primary"
+               href="<?= e($base) ?>/projekt/<?= $id ?>/zip/<?= (int) $neustes['id'] ?>">
+                Website herunterladen
+            </a>
+        <?php endif; ?>
+        <?php if (\WebAtze\Domain\Websites::hatVorschau($project)): ?>
+            <a class="wa-btn wa-btn--quiet" target="_blank" rel="noopener"
+               href="<?= e(\WebAtze\Build\Pipeline::previewUrl($project)) ?>">Vorschau ansehen</a>
+        <?php endif; ?>
     </div>
 </section>
 
@@ -508,24 +320,6 @@ $bereit = $target !== null;
                        data-ftp-field="host"
                        value="<?= e((string) ($target['host'] ?? '')) ?>">
 
-                <?php
-                /* Der Name, den der letzte Test als auflösend gefunden hat.
-                   Er steht hier zum Anklicken: Ihn noch einmal von Hand
-                   richtig zu treffen ist genau die Gelegenheit für den
-                   nächsten Tippfehler. */
-                $hostVorschlag = (string) ($gefunden['vorschlagHost'] ?? '');
-                ?>
-                <?php if ($hostVorschlag !== ''): ?>
-                    <div class="wa-found">
-                        <p class="wa-found__title">Dieser Name löst auf &ndash; zum Übernehmen anklicken:</p>
-                        <div class="wa-found__list">
-                            <button type="button" class="wa-found__item is-suggested"
-                                    data-fill="#host" data-fill-value="<?= e($hostVorschlag) ?>">
-                                <?= e($hostVorschlag) ?>
-                            </button>
-                        </div>
-                    </div>
-                <?php endif; ?>
             </div>
 
             <div class="wa-field">
@@ -547,36 +341,16 @@ $bereit = $target !== null;
             <div class="wa-field">
                 <label class="wa-label" for="path">Verzeichnis</label>
                 <?php
-                /* Das "/" steht schon drin, weil es fuer ein cPanel-Unterkonto
-                   stimmt: So eines sitzt bereits in seinem Ordner. Wer das
-                   Hauptkonto benutzt, traegt den vollen Pfad ein - und wer
-                   unsicher ist, drueckt einmal auf "Verbindung testen": Der
-                   Test sieht nach und legt die gefundenen Ordner als Knoepfe
-                   unter das Feld. */
+                /* Das "/" steht schon drin, weil es fuer ein
+                   cPanel-Unterkonto stimmt: So eines sitzt bereits in
+                   seinem Ordner. Wer das Hauptkonto benutzt, traegt den
+                   vollen Pfad ein - denselben, den auch FileZilla
+                   braucht. */
                 ?>
                 <input class="wa-input" type="text" id="path" name="path" data-ftp-field="path"
                        placeholder="/"
                        value="<?= e((string) ($target['remote_path'] ?? '/')) ?>">
 
-                <?php
-                    $ordner = (array) ($gefunden['ordner'] ?? []);
-                    $vorschlag = (string) ($gefunden['vorschlag'] ?? '');
-                ?>
-                <?php if ($ordner !== []): ?>
-                    <div class="wa-found">
-                        <p class="wa-found__title">
-                            Beim letzten Test dort gefunden &ndash; zum Übernehmen anklicken:
-                        </p>
-                        <div class="wa-found__list">
-                            <?php foreach ($ordner as $eintrag): ?>
-                                <button type="button" class="wa-found__item<?= $eintrag === $vorschlag ? ' is-suggested' : '' ?>"
-                                        data-fill="#path" data-fill-value="<?= e((string) $eintrag) ?>">
-                                    <?= e((string) $eintrag) ?><?= $eintrag === $vorschlag ? ' ·  passt vermutlich' : '' ?>
-                                </button>
-                            <?php endforeach; ?>
-                        </div>
-                    </div>
-                <?php endif; ?>
             </div>
         </div>
 
@@ -587,56 +361,12 @@ $bereit = $target !== null;
 
     <?php
     /**
-     * Was der letzte Test gemessen hat.
+     * Warum diese Felder noch da sind.
      *
-     * Frueher stand hier eine Kette aus acht Stufen. Sie sollte die
-     * Ursache zeigen und hat sie laufend verwechselt - ein leerer
-     * Ordner als Netzfehler, ein "gibt es nicht" ueber einem 250 Ok.
-     * Jetzt steht das Urteil als Meldung oben, und hier liegt nur noch,
-     * was tatsaechlich gemessen wurde: aufgeklappt fuer den, der es
-     * braucht, und aus dem Weg fuer alle anderen.
+     * Nicht mehr zum Verbinden - von hier aus geht nichts mehr auf den
+     * Kundenserver. Sondern zum Nachschlagen: Wenn FileZilla nach
+     * Server, Benutzer und Verzeichnis fragt, stehen sie hier, und das
+     * Passwort liegt verschlüsselt daneben statt auf einem Zettel.
      */
-    $einzelheiten = (array) ($gefunden['details'] ?? []);
     ?>
-    <?php if ($einzelheiten !== []): ?>
-        <details class="wa-help">
-            <summary>Was der Test gemessen hat</summary>
-            <div class="wa-help__body">
-                <ol>
-                    <?php foreach ($einzelheiten as $zeile): ?>
-                        <li><?= e((string) $zeile) ?></li>
-                    <?php endforeach; ?>
-                </ol>
-            </div>
-        </details>
-    <?php endif; ?>
-
-    <?php if ($target !== null): ?>
-        <div class="wa-form__actions">
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/ftp/testen">
-                <?= Csrf::field() ?>
-                <button type="submit" class="wa-btn">Verbindung testen</button>
-            </form>
-            <?php /* Ohne gebautes Paket gibt es nichts hochzuladen - dann
-                     bleibt der Knopf weg, statt eine Fehlermeldung zu
-                     versprechen. */ ?>
-            <form method="post" action="<?= e($base) ?>/projekt/<?= $id ?>/hochladen"
-                  <?= $builds === [] ? 'hidden' : '' ?>
-                  data-confirm="Die Website jetzt auf den Server des Kunden laden? Bestehende Dateien im Zielverzeichnis werden überschrieben.">
-                <?= Csrf::field() ?>
-                <button type="submit" class="wa-btn">Gebautes Paket über FTP hochladen</button>
-            </form>
-        </div>
-
-        <?php if ((string) ($target['last_result'] ?? '') !== ''): ?>
-            <div class="wa-note">
-                <div>
-                    <strong>Zuletzt:</strong> <?= e((string) $target['last_result']) ?>
-                    <?php if ((string) ($target['last_deployed_at'] ?? '') !== ''): ?>
-                        (<?= e(date('d.m.Y H:i', strtotime((string) $target['last_deployed_at']))) ?>)
-                    <?php endif; ?>
-                </div>
-            </div>
-        <?php endif; ?>
-    <?php endif; ?>
 </section>

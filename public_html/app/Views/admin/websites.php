@@ -159,6 +159,17 @@ $base = '/' . trim((string) Config::get('create_path', 'create'), '/');
                                       title="<?= e(Websites::STATUS_LANG[(string) $w['status']] ?? '') ?>">
                                     <?= e($status[(string) $w['status']] ?? (string) $w['status']) ?>
                                 </span>
+                                <?php /* Seit die Uebertragung von Hand laeuft, ist das
+                                         die wichtigste Auskunft der Liste: Was hier
+                                         geaendert wurde, liegt beim Kunden erst, wenn
+                                         es jemand hinbringt. */ ?>
+                                <?php if (Websites::offeneAenderung($w)): ?>
+                                    <a class="wa-badge wa-badge--warn"
+                                       href="<?= e($base) ?>/projekt/<?= (int) $w['id'] ?>/veroeffentlichen"
+                                       title="Seit dem letzten Herunterladen wurde hier etwas geändert.">
+                                        nicht heruntergeladen
+                                    </a>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <?php if ($waechter === null): ?>

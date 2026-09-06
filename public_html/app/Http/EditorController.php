@@ -76,6 +76,11 @@ final class EditorController
                 'seite' => $seite,
                 'entwurf' => Publications::hasDraft((int) $seite['id']),
                 'daten' => $this->konfiguration($projekt, $seite, $seiten),
+                // Die zwei Enden der Schleife: Was hereinkam, und was
+                // noch hinaus muss. Uebertragen wird von Hand - also
+                // gehoert beides dorthin, wo gearbeitet wird.
+                'pakete' => \WebAtze\Build\ZipExporter::listFor((int) $projekt['id']),
+                'offen' => \WebAtze\Domain\Websites::offeneAenderung($projekt),
             ]),
         ]))->noCache()->noIndex();
     }
@@ -832,23 +837,18 @@ final class EditorController
             }
 
             // Ein Fehlschlag der Brücke ist eine Nachricht und kein
-            // stiller Rückfall auf FTP: Wenn der Kunde selbst etwas
-            // geändert hat, soll das nicht über FTP doch noch
-            // überschrieben werden.
+            // stiller Rückfall auf einen anderen Weg.
             return 'Die Brücke meldet: ' . $antwort['error'];
         }
 
-        try {
-            $ftp = \WebAtze\Build\FtpDeployer::deploy($projekt);
-        } catch (\Throwable $e) {
-            Logger::exception($e);
-
-            return 'Der Upload ist gescheitert.';
-        }
-
-        return $ftp['ok']
-            ? 'Über FTP hochgeladen (' . (int) $ftp['files'] . ' Dateien).'
-            : 'Der Upload ist gescheitert: ' . (string) $ftp['error'];
+        // Ohne Brücke bleibt der Weg von Hand - und das ist seit dem
+        // Umbau der Normalfall, nicht der Notfall. Von hier aus kommt
+        // nichts mehr auf den Kundenserver: Drei Wege dorthin waren
+        // durchgemessen und alle drei tot. Also sagt die Meldung, was
+        // als Nächstes zu tun ist, statt einen Upload zu versprechen,
+        // den es nicht gibt.
+        return 'Gespeichert. Zum Veröffentlichen die Website herunterladen '
+            . 'und mit deinem FTP-Programm hinaufladen.';
     }
 
     // ------------------------------------------------------------------

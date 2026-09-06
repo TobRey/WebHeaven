@@ -386,23 +386,46 @@ final class Backup
      */
     private static function fetchRemoteData(array $project): array
     {
-        $target = Db::first(
-            'SELECT * FROM deploy_targets WHERE project_id = :p ORDER BY id DESC LIMIT 1',
-            ['p' => (int) $project['id']]
-        );
+        // Frueher wurde der Ordner ueber FTP beim Kunden geholt. Das ist
+        // gestrichen, und zwar nicht aus Bequemlichkeit: Von einem
+        // Hosting zum anderen kommt die Datenverbindung nicht durch -
+        // gemessen, dreimal, an drei Wegen. Die Sicherung hat den
+        // Datenordner damit seit Wochen still nicht bekommen und trotzdem
+        // "fertig" gemeldet.
+        //
+        // Jetzt kommt er aus dem zuletzt uebernommenen Stand. Der ist
+        // aelter als "jetzt" - und genau das steht auch drin, statt dass
+        // ein leerer Ordner wie ein voller aussieht.
+        $ordner = Uebernahme::ordner($project) . '/data';
 
-        if ($target === null) {
+        if (!is_dir($ordner)) {
             return [];
         }
+
+        $raus = [];
 
         try {
-            return FtpDeployer::fetchDirectory($target, 'data', 25.0);
+            $eintraege = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($ordner, \FilesystemIterator::SKIP_DOTS)
+            );
+
+            foreach ($eintraege as $eintrag) {
+                if (!$eintrag->isFile() || is_link($eintrag->getPathname())) {
+                    continue;
+                }
+
+                $relativ = substr($eintrag->getPathname(), strlen($ordner) + 1);
+                $raus[$relativ] = (string) @file_get_contents($eintrag->getPathname());
+            }
         } catch (Throwable $e) {
-            Logger::info('Sicherung: der Datenordner liess sich nicht holen.', [
+            Logger::info('Sicherung: der uebernommene Datenordner liess sich nicht lesen.', [
                 'projekt' => (string) $project['slug'],
             ]);
+
             return [];
         }
+
+        return $raus;
     }
 
     // -------------------------------------------------------------- Aufräumen

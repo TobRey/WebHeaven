@@ -53,11 +53,7 @@ final class Pipeline
         match ($type) {
             'generate', 'rebuild' => self::generate($job, $budget),
             'zip' => self::zipOnly($job),
-            'deploy' => self::deploy($job, $budget),
-            'live' => self::pullLive($job, $budget),
-            'zip-hochladen' => self::deployZip($job, $budget),
-            'zip-per-bruecke' => self::deployBruecke($job, $budget),
-            'stand-per-bruecke' => self::pullLive($job, $budget, 'https'),
+            'zip-uebernehmen' => self::zipUebernehmen($job, $budget),
             default => throw new RuntimeException('Unbekannte Auftragsart: ' . $type),
         };
     }
@@ -929,88 +925,20 @@ final class Pipeline
     }
 
     /**
-     * Den aktuellen Stand vom Kundenserver holen.
+     * Den Stand vom Kunden uebernehmen.
      *
      * Als Auftrag und nicht im Web-Request: Eine Website mit
-     * dreihundert Dateien ueber FTP dauert laenger als jedes
-     * max_execution_time auf geteiltem Hosting - und der Browser haette
-     * laengst abgebrochen, waehrend der Download weiterlaeuft.
-     */
-    private static function pullLive(array $job, float $budget, string $weg = 'ftp'): void
-    {
-        $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
-
-        if ($project === null) {
-            Jobs::fail($job['id'], 'Projekt nicht gefunden.', false);
-
-            return;
-        }
-
-        Jobs::progress($job['id'], 'holen', 10, $weg === 'https'
-            ? 'Die Website wird angerufen …'
-            : 'Verbindung wird aufgebaut …');
-
-        try {
-            $ergebnis = ZipExporter::pullLive(
-                $project,
-                static function (int $dateien, string $pfad) use ($job): void {
-                    // Ohne bekannte Gesamtzahl gibt es keinen Prozentsatz -
-                    // hier wird gezaehlt, nicht geschaetzt. Eine erfundene
-                    // Prozentzahl, die bei 90 stehen bleibt, ist schlimmer
-                    // als eine ehrliche Anzahl.
-                    Jobs::progress(
-                        $job['id'],
-                        'holen',
-                        min(90, 10 + (int) ($dateien / 5)),
-                        sprintf('%d Dateien geholt … (%s)', $dateien, $pfad)
-                    );
-                },
-                $budget - 10.0,
-                $weg,
-                (bool) ($job['payload']['liegenlassen'] ?? false)
-            );
-        } catch (\Throwable $e) {
-            Jobs::fail($job['id'], $e->getMessage(), false);
-
-            return;
-        }
-
-        Jobs::progress($job['id'], 'fertig', 100, 'Stand geholt.', ['live' => $ergebnis]);
-
-        Jobs::finish($job['id'], sprintf(
-            '%d Dateien geholt (%s).%s%s',
-            $ergebnis['files'],
-            format_bytes((int) $ergebnis['bytes']),
-            $ergebnis['abgeschnitten']
-                ? ' Achtung: unvollständig, eine Grenze war erreicht.'
-                : '',
-            ($ergebnis['aufgeraeumt'] ?? false)
-                ? ' Die Empfangsdatei ist wieder weg.'
-                : ''
-        ) . (((int) ($ergebnis['zurueckgehalten'] ?? 0)) > 0
-            ? sprintf(
-                ' %d Datei(en) mit Zugangsdaten sind bewusst nicht dabei - '
-                . 'als Sicherung taugt das Archiv damit nicht.',
-                (int) $ergebnis['zurueckgehalten']
-            )
-            : ''));
-    }
-
-    /**
-     * Ein hochgeladenes Archiv auf den Kundenserver schieben.
+     * dreihundert Dateien auszupacken und ihre Abschnitte
+     * zurueckzuschreiben dauert laenger als jedes max_execution_time auf
+     * geteiltem Hosting - und der Browser haette laengst abgebrochen,
+     * waehrend die Arbeit weiterlaeuft.
      *
-     * Der Weg ohne den eingebauten Generator: Auftragstext kopieren,
-     * die Website anderswo bauen lassen, das Ergebnis hier hochladen.
+     * Zwei Schritte, und der zweite darf fehlen: Ausgepackt wird immer,
+     * uebernommen nur, wenn data/site.php dabei ist. Ein fremdes ZIP aus
+     * dem Auftragstext hat sie nicht - das ist kein Fehler, sondern eine
+     * Auskunft.
      */
-    /**
-     * Dasselbe Archiv, nur über HTTPS statt FTP.
-     *
-     * Für den Fall, dass die FTP-Datenverbindung nicht durchkommt -
-     * gemessen, nicht vermutet: Der Ausgangstest sagt, ob es daran
-     * liegt. Vorbedingung ist, dass die Empfangsdatei einmal von Hand
-     * auf der Kundenwebsite liegt.
-     */
-    private static function deployBruecke(array $job, float $budget): void
+    private static function zipUebernehmen(array $job, float $budget): void
     {
         $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
 
@@ -1029,174 +957,73 @@ final class Pipeline
             return;
         }
 
-        Jobs::progress($job['id'], 'hochladen', 10, 'Die Website wird angerufen …');
+        Jobs::progress($job['id'], 'auspacken', 15, 'Das Archiv wird ausgepackt …');
 
-        $ergebnis = \WebAtze\Build\Empfang::senden(
-            $project,
-            $zip,
-            static function (int $fertig, int $gesamt, string $datei) use ($job): void {
-                Jobs::progress(
-                    $job['id'],
-                    'hochladen',
-                    10 + (int) round(85 * ($gesamt > 0 ? $fertig / $gesamt : 0)),
-                    sprintf('%d von %d Dateien (%s)', $fertig, $gesamt, $datei)
-                );
-            },
-            $budget - 5.0,
-            !(bool) ($job['payload']['liegenlassen'] ?? false),
-            // Vorgabe ja: Danach geht "Stand holen" ohne Handgriffe.
-            ($job['payload']['lesezugang'] ?? true) !== false
-        );
+        $aus = \WebAtze\Build\Uebernahme::auspacken($project, $zip);
 
-        @unlink($zip);
-
-        if (!$ergebnis['ok']) {
-            Jobs::fail($job['id'], $ergebnis['error'], $ergebnis['retryable'] ?? true);
+        if (!$aus['ok']) {
+            @unlink($zip);
+            Jobs::fail($job['id'], $aus['error'], false);
 
             return;
         }
 
-        Jobs::progress($job['id'], 'fertig', 100, 'Hochgeladen.');
-        Jobs::finish($job['id'], sprintf(
-            '%d Dateien über HTTPS hochgeladen%s%s.',
-            $ergebnis['files'],
-            ($ergebnis['lesezugang'] ?? false)
-                ? ' - die Leseschnittstelle liegt jetzt dort'
-                : '',
-            ($ergebnis['aufgeraeumt'] ?? false) ? ', die Empfangsdatei ist wieder weg' : ''
+        Jobs::progress($job['id'], 'uebernehmen', 55, sprintf(
+            '%d Dateien ausgepackt. Inhalte werden übernommen …',
+            $aus['files']
         ));
 
-        Db::update('projects', [
-            'status' => 'live',
-            'published_at' => Db::now(),
-            'updated_at' => Db::now(),
-        ], 'id = :id', ['id' => (int) $project['id']]);
+        $inhalt = \WebAtze\Build\Uebernahme::inhalteUebernehmen($project);
 
-        Audit::log('project.deployed.bruecke', (string) $project['name'], [
-            'dateien' => $ergebnis['files'],
-        ]);
-    }
-
-    private static function deployZip(array $job, float $budget): void
-    {
-        $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
-
-        if ($project === null) {
-            Jobs::fail($job['id'], 'Projekt nicht gefunden.', false);
-
-            return;
-        }
-
-        $zip = (string) ($job['payload']['zip'] ?? '');
-
-        // Nur aus dem eigenen Ablageordner - der Pfad kommt aus dem
-        // Auftrag, und ein Auftrag ist eine Datenbankzeile.
-        $erlaubt = STORAGE_DIR . '/uploads/';
-
-        if ($zip === '' || !str_starts_with($zip, $erlaubt) || !is_file($zip)) {
-            Jobs::fail($job['id'], 'Das hochgeladene Archiv ist nicht mehr da.', false);
-
-            return;
-        }
-
-        Jobs::progress($job['id'], 'hochladen', 10, 'Verbindung wird aufgebaut …');
-
-        $ergebnis = FtpDeployer::deployZip(
-            $project,
-            $zip,
-            static function (int $fertig, int $gesamt, string $datei) use ($job): void {
-                Jobs::progress(
-                    $job['id'],
-                    'hochladen',
-                    10 + (int) round(85 * ($gesamt > 0 ? $fertig / $gesamt : 0)),
-                    sprintf('%d von %d Dateien (%s)', $fertig, $gesamt, $datei)
-                );
-            },
-            $budget - 5.0
-        );
-
-        // Das Archiv hat seinen Zweck erfüllt. Es liegen zu lassen
-        // hiesse, fremde Dateien ohne Grund aufzubewahren.
+        // Das Archiv selbst bleibt als Stand liegen - es ist der Beweis,
+        // was beim Kunden lag, und der Weg zurueck, wenn die Uebernahme
+        // etwas verdorben hat.
+        ZipExporter::uebernahmeVermerken($project, $zip, $aus['files']);
         @unlink($zip);
 
-        if (!$ergebnis['ok']) {
-            Jobs::fail($job['id'], $ergebnis['error'], $ergebnis['retryable'] ?? true);
+        if (!$inhalt['ok']) {
+            // Ausgepackt ist ausgepackt: ansehen und herunterladen geht,
+            // bearbeiten nicht. Das ist ein Ergebnis, kein Fehlschlag.
+            Jobs::progress($job['id'], 'fertig', 100, 'Ausgepackt.');
+            Jobs::finish($job['id'], sprintf(
+                '%d Dateien übernommen. %s',
+                $aus['files'],
+                $inhalt['error']
+            ));
 
             return;
         }
 
-        Jobs::progress($job['id'], 'fertig', 100, 'Hochgeladen.', ['deploy' => $ergebnis]);
-        Jobs::finish($job['id'], sprintf('%d Dateien aus dem Archiv hochgeladen.', $ergebnis['files']));
+        Jobs::progress($job['id'], 'bauen', 80, 'Die Website wird neu gebaut …');
 
-        Db::update('projects', [
-            'status' => 'live',
-            'published_at' => Db::now(),
-            'updated_at' => Db::now(),
-        ], 'id = :id', ['id' => (int) $project['id']]);
+        // Neu bauen, damit Vorschau und Vorschaubild den uebernommenen
+        // Stand zeigen und nicht den von vorletzter Woche.
+        try {
+            $dist = STORAGE_DIR . '/projects/' . (string) $project['slug'] . '/dist';
+            delete_tree($dist);
+            (new SiteBuilder($project, $dist))->build();
+        } catch (\Throwable $e) {
+            Logger::exception($e);
+        }
 
-        Audit::log('project.deployed.zip', (string) $project['name'], [
-            'dateien' => $ergebnis['files'],
+        Jobs::progress($job['id'], 'fertig', 100, 'Übernommen.');
+        Jobs::finish($job['id'], sprintf(
+            '%d Dateien übernommen, %d Seiten und %d Abschnitte eingelesen.%s',
+            $aus['files'],
+            $inhalt['seiten'],
+            $inhalt['abschnitte'],
+            $inhalt['uebrig'] > 0
+                ? sprintf(' %d Seite(n) stehen hier, aber nicht im Archiv - unverändert gelassen.',
+                    $inhalt['uebrig'])
+                : ''
+        ));
+
+        Audit::log('project.uebernommen', (string) $project['name'], [
+            'dateien' => $aus['files'],
+            'seiten' => $inhalt['seiten'],
         ]);
     }
 
-    private static function deploy(array $job, float $budget): void
-    {
-        $project = Db::first('SELECT * FROM projects WHERE id = :id', ['id' => (int) $job['project_id']]);
-        if ($project === null) {
-            Jobs::fail($job['id'], 'Projekt nicht gefunden.', false);
-            return;
-        }
-
-        Jobs::progress($job['id'], 'hochladen', 20, 'Verbindung wird aufgebaut …');
-
-        $result = FtpDeployer::deploy($project, static function (int $done, int $total, string $file) use ($job): void {
-            $percent = 20 + (int) round(70 * ($total > 0 ? $done / $total : 0));
-            Jobs::progress($job['id'], 'hochladen', $percent, sprintf('%d von %d Dateien', $done, $total));
-        }, $budget - 5.0);
-
-        if (!$result['ok']) {
-            Jobs::fail($job['id'], $result['error'], $result['retryable'] ?? true);
-            return;
-        }
-
-        Jobs::progress($job['id'], 'fertig', 100, 'Hochgeladen.', ['deploy' => $result]);
-        Jobs::finish($job['id'], sprintf('%d Dateien hochgeladen.', $result['files']));
-
-        Db::update('projects', [
-            'status' => 'live',
-            'published_at' => Db::now(),
-            'updated_at' => Db::now(),
-        ], 'id = :id', ['id' => (int) $project['id']]);
-
-        Audit::log('project.deployed', (string) $project['name'], ['dateien' => $result['files']]);
-
-        // Wer eine Website veröffentlicht, will sie überwacht haben,
-        // ohne daran denken zu müssen. Steht sie schon in der Aufsicht,
-        // passiert hier nichts.
-        $adresse = trim((string) ($project['domain'] ?? ''));
-
-        if ($adresse !== '') {
-            try {
-                \WebAtze\Domain\Monitor::adopt(
-                    $adresse,
-                    (string) $project['name'],
-                    null,
-                    (int) $project['id']
-                );
-            } catch (\Throwable $e) {
-                // Die Aufsicht ist Beiwerk. Ein Hochladen, das
-                // deswegen als gescheitert gilt, wäre schlimmer als
-                // eine Seite ohne Aufsicht.
-                Logger::exception($e);
-            }
-        }
-    }
-
-    // ==================================================================
-    // Helfer
-    // ==================================================================
-
-    /** Alte Seiten und Abschnitte entfernen, bevor neu geschrieben wird. */
     private static function clearPages(int $projectId): void
     {
         Db::transaction(static function () use ($projectId): void {

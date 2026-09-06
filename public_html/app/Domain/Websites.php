@@ -436,7 +436,62 @@ final class Websites
             return false;
         }
 
-        return is_file(STORAGE_DIR . '/projects/' . $slug . '/dist/index.html');
+        // Der gebaute Stand zuerst, dann der uebernommene: Eine fremde
+        // Website wird hier nie gebaut, liegt aber nach dem Auspacken
+        // trotzdem da - und ein echtes Bild ist besser als ein
+        // Anfangsbuchstabe.
+        return is_file(STORAGE_DIR . '/projects/' . $slug . '/dist/index.html')
+            || is_file(STORAGE_DIR . '/projects/' . $slug . '/'
+                . \WebAtze\Build\Uebernahme::ORDNER . '/index.html');
+    }
+
+    /**
+     * Gibt es etwas, das beim Kunden noch nicht liegt?
+     *
+     * Seit die Übertragung von Hand läuft, ist das die wichtigste Frage
+     * der Liste – und sie wird nicht durch ein zweites Merkmal
+     * beantwortet, das man pflegen muss. Ein solches Merkmal weicht
+     * irgendwann von der Wirklichkeit ab, und dann sagt es das Falsche
+     * an der Stelle, an der man sich darauf verlässt.
+     *
+     * Stattdessen aus den Daten selbst: Die jüngste Änderung an einer
+     * Seite oder einem Abschnitt gegen den Zeitpunkt des letzten
+     * Herunterladens. Ist sie jünger, ist sie noch nicht draussen.
+     *
+     * Nie heruntergeladen und schon gebaut heisst ebenfalls offen –
+     * sonst sähe eine fertige, nie ausgelieferte Website aus wie eine
+     * erledigte.
+     */
+    public static function offeneAenderung(array $website): bool
+    {
+        $id = (int) ($website['id'] ?? 0);
+
+        if ($id <= 0) {
+            return false;
+        }
+
+        $geaendert = (string) Db::value(
+            'SELECT MAX(letzte) FROM (
+                 SELECT MAX(updated_at) AS letzte FROM project_pages WHERE project_id = :p1
+                 UNION ALL
+                 SELECT MAX(updated_at) AS letzte FROM project_sections WHERE project_id = :p2
+             ) AS beides',
+            ['p1' => $id, 'p2' => $id]
+        );
+
+        if ($geaendert === '') {
+            // Nichts zu bearbeiten - dann ist auch nichts offen. Eine
+            // von Hand hinzugefuegte Website soll nicht ewig mahnen.
+            return false;
+        }
+
+        $geholt = trim((string) ($website['downloaded_at'] ?? ''));
+
+        if ($geholt === '') {
+            return self::hatVorschau($website);
+        }
+
+        return strtotime($geaendert) > strtotime($geholt);
     }
 
     /**

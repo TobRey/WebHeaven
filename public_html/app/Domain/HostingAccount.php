@@ -66,7 +66,7 @@ final class HostingAccount
         // Derselbe Weg, den auch das Ziel je Website nimmt: Was
         // hineinkopiert wurde, wird zuerst zurechtgerückt, damit der
         // Fehler nicht dauerhaft in der Datenbank steht.
-        $sauber = \WebAtze\Build\FtpDeployer::normalizeHost(
+        $sauber = \WebAtze\Build\Zugang::normalizeHost(
             (string) ($daten['host'] ?? ''),
             (int) ($daten['port'] ?? 21)
         );

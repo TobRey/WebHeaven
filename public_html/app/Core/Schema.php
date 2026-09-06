@@ -1221,6 +1221,16 @@ final class Schema
             '050_dateien_secret' => '
                 ALTER TABLE projects ADD COLUMN dateien_secret {string:64} NOT NULL DEFAULT \'\';
             ',
+
+            // Wann zuletzt ein Paket heruntergeladen wurde.
+            //
+            // Seit die Uebertragung von Hand laeuft, ist das die
+            // wichtigste Frage der Liste: Steht hier etwas Neueres als
+            // dieser Zeitpunkt, ist es beim Kunden noch nicht
+            // angekommen.
+            '051_projects_downloaded_at' => '
+                ALTER TABLE projects ADD COLUMN downloaded_at {datetime} NULL;
+            ',
         ];
     }
 

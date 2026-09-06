@@ -317,75 +317,49 @@ darf, und entsprechend abgesichert:
 * **Abschaltbar.** `bridge_secret` in `data/config.php` leeren genuegt.
   Es ist die Website des Kunden.
 
-Fehlt die Bruecke - eine fremde Seite, ein Kunde ohne Backend -, geht es
-ueber den Empfaenger oder ueber FTP.
+Sie ist fuer den Editor gedacht und nimmt Daten entgegen, nie Code. Eine ganze
+Website - die aus PHP besteht - geht den anderen Weg, ueber das ZIP darunter.
 
-### Der Empfaenger: eine ganze Website hinauf und herunter
+### Die Werkstatt: ZIP herein, ZIP hinaus
 
-Die Bruecke oben ist fuer den Editor: Sie nimmt *Daten* entgegen und
-schreibt eine Seite neu. Eine ganze Website ist etwas anderes - die
-besteht aus PHP, und die Bruecke nimmt bewusst keinen Code an.
+Von WebAtze aus geht **nichts** auf den Kundenserver. Drei Wege dorthin waren
+durchgemessen und alle drei tot: FTP mit verworfener Datenverbindung, eine von Hand
+hingelegte Empfangsdatei ueber HTTPS, eine dauerhafte Leseschnittstelle. Von einem
+Hosting zum anderen kommt nichts durch - vom eigenen Rechner aus dagegen problemlos.
 
-Dafuer gibt es den **Empfaenger**: eine Datei `webatze-empfang.php`, die
-einmal von Hand in das Verzeichnis der Kundenwebsite gelegt wird. Danach
-laeuft alles ueber HTTPS auf Port 443 - hinauf wie herunter.
+Also uebertraegt der Mensch, mit seinem eigenen FTP-Programm, in beide Richtungen.
+WebAtze ist das, was dazwischen liegt:
 
-Warum nicht einfach FTP? Weil FTP zwei Verbindungen braucht: eine fuer
-die Befehle auf Port 21 und fuer jede Datei eine zweite auf einem hohen
-Port. Genau die zweite wird auf geteiltem Hosting oft verworfen, und
-dann hilft kein Einstellen mehr - gemessen an einem Kundenserver, dessen
-`PASV`-Adresse von aussen erreichbar war und vom eigenen Server aus in
-eine Zeitueberschreitung lief. Der Knopf *Kann dieser Server ueberhaupt
-FTP?* auf der Veroeffentlichen-Seite trennt die beiden Faelle.
+1. Website beim Kunden herunterladen (FileZilla), als ZIP hier hochladen.
+2. Das Archiv wird nach `storage/projects/<slug>/live` ausgepackt - **ausserhalb des
+   Web-Ordners**. Dorthin fuehrt kein Weg, der etwas ausfuehren wuerde; ausgeliefert
+   wird nur ueber `PreviewController`, und der schiebt Bytes mit einer festen
+   Typenliste. Genau dieser Einwand hatte das Auspacken jahrelang verhindert.
+3. Liegt `data/site.php` im Archiv - die Website als Daten, geschrieben von
+   `AdminKit` -, kommt ihr Inhalt zurueck in die Datenbank. Danach steht im Editor
+   wirklich das, was beim Kunden lag: seine Bilder, seine Anfragen, seine im eigenen
+   Backend geaenderten Texte. Vor dem Ueberschreiben legt `Publications::record()`
+   eine Fassung an.
+4. Bearbeiten, speichern, Vorschau ansehen - alles auf dem eigenen Hosting.
+5. **Website herunterladen**: der gebaute Stand plus alles aus dem uebernommenen
+   Archiv, was der Bau nicht selbst erzeugt. Ohne das loeschte der naechste Upload
+   beim Kunden genau die Bilder, die er selbst hochgeladen hat.
+6. Mit dem FTP-Programm hinaufladen.
 
-Nebenbei faellt die Pfadfrage weg: Der Empfaenger arbeitet immer in dem
-Ordner, in dem er selbst liegt. Ein falsches Verzeichnis kann es nicht
-geben.
+**Bearbeitbar sind nur von WebAtze gebaute Websites.** Der Editor arbeitet auf Seiten
+und Abschnitten; ein ZIP aus dem Auftragstext ist blosses HTML, und dafuer gibt es
+nichts zu greifen. Solche Websites lassen sich hochladen, ansehen und herunterladen -
+nur nicht aendern, und die Seite sagt das, statt einen leeren Editor zu zeigen.
 
-Abgesichert wie die Bruecke - dieselbe Unterschrift, dasselbe
-Zeitfenster, derselbe Einmalwert - und darueber hinaus:
+**Was noch nicht draussen ist, steht in der Liste.** Nicht als gepflegtes Merkmal,
+sondern aus den Daten: Ist die juengste Aenderung an einer Seite oder einem Abschnitt
+juenger als der letzte Download, traegt die Website ein Abzeichen. Ein Merkmal, das
+man pflegen muss, weicht irgendwann von der Wirklichkeit ab - und sagt dann das
+Falsche an der Stelle, an der man sich darauf verlaesst.
 
-* **Er verschwindet wieder.** Nach der Uebertragung loescht er sich
-  selbst; spaetestens nach 24 Stunden ohnehin. Ein Haekchen laesst ihn
-  fuer die naechste Uebertragung liegen, ein Knopf entfernt ihn sofort.
-* **Er kommt aus seinem Ordner nicht heraus.** Jeder Pfad wird an den
-  einzelnen Namen geprueft und danach am aufgeloesten Pfad gegen
-  Symlinks - beim Schreiben wie beim Lesen, durch dieselbe Funktion.
-* **Eigener Schluessel je Website.** Nicht der der Bruecke: Wer den
-  Empfaenger von einer Website liest, haette sonst alle offen.
-
-### Die Leseschnittstelle: Dateien holen ohne jeden Handgriff
-
-Der Empfaenger loest das Hochladen, aber er verschwindet danach - fuer
-das *Holen* muesste man ihn jedes Mal neu hinlegen. Deshalb faehrt beim
-Hochladen eine zweite Datei mit, `wa-dateien.php`, und die bleibt
-liegen. Ab dann holt *Aktuellen Stand holen* die Website ueber HTTPS,
-ohne FTP und ohne Handgriff. Eine hier gebaute Website bringt sie von
-Anfang an mit.
-
-Der Unterschied zum Empfaenger ist nicht die Technik, sondern was sie
-darf: **Sie liest, und sie schreibt nicht.** Eine dauerhaft erreichbare
-*Schreib*stelle auf einer Kundenwebsite ist kein Zustand, den man
-hinterlaesst - eine Lesestelle ist etwas anderes. Sie gibt im
-schlimmsten Fall das heraus, was die Website ohnehin ausliefert.
-
-Damit das auch stimmt:
-
-* **Geheimnisse bleiben drin.** `config.php`, `.env`, `.htpasswd` und
-  die Schnittstellendateien selbst werden nie herausgegeben und nie
-  aufgelistet - in `data/config.php` steht der Schluessel der Bruecke.
-* **Und das Fehlen wird gezaehlt.** Was zurueckgehalten wurde, steht in
-  der Abschlussmeldung. Ein Archiv, dem stillschweigend etwas fehlt,
-  wird irgendwann fuer eine Sicherung gehalten.
-* **Eigener Schluessel**, weder der der Bruecke noch der des
-  Empfaengers. Zwei Lebensdauern, zwei Schluessel.
-* **Sperren geht ohne FTP.** Ein Knopf auf der Veroeffentlichen-Seite
-  tauscht den Schluessel; die Datei liegt dann noch dort, nimmt aber
-  nichts mehr an. Wer sie ganz weghaben will, loescht sie - es ist eine
-  gewoehnliche Datei.
-
-FTP und SFTP bleiben daneben stehen, fuer die Server, bei denen sie
-durchkommen.
+Die **FTP-Zugangsdaten bleiben** trotzdem gespeichert, verschluesselt. Nicht zum
+Verbinden - zum Nachschlagen, wenn FileZilla nach Server, Benutzer und Verzeichnis
+fragt.
 
 ### Die CSS-Notfallebene
 
@@ -521,7 +495,7 @@ php -S 127.0.0.1:8080 -t public_html public_html/index.php
 
 | Befehl | Wofür |
 |---|---|
-| `php tests/run.php` | der Testlauf (2379 Prüfungen) |
+| `php tests/run.php` | der Testlauf (2126 Prüfungen) |
 | `php tests/run.php --seiten-festhalten` | den Aufbau der eigenen Seiten neu festhalten |
 | `php tools/eigene-website-uebernehmen.php` | zeigt, was aus der eigenen Website als Daten entstünde |
 | `php tools/probelauf/durchlauf.php` | eine ganze Website bauen, vom Formular bis zum Paket |

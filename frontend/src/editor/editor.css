@@ -50,8 +50,9 @@
      Mausklick dort nie im Rahmen an, und Ziehen war am linken Rand
      unmöglich – ohne dass irgendetwas danach aussah. */
   grid-template-columns: 12rem 1fr 0;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
   grid-template-areas:
+    'schleife schleife schleife'
     'leiste leiste leiste'
     'vorrat buehne blatt';
   background: var(--wae-bg);
@@ -62,6 +63,7 @@
 
 .wa-editor:has(.wae-blatt) { grid-template-columns: 12rem 1fr min(24rem, 40vw); }
 
+.wa-editor__schleife { grid-area: schleife; }
 .wa-editor__bar { grid-area: leiste; }
 .wa-editor__stage { grid-area: buehne; }
 .wae-vorrat { grid-area: vorrat; }
@@ -83,6 +85,102 @@
 }
 
 .wa-editor__group { display: flex; align-items: center; gap: 0.5rem; }
+
+/* ------------------------------------------------------------------ */
+/* Der Editor ist immer dunkel - seine Knoepfe muessen es auch sein     */
+/*                                                                     */
+/* Gemessen im hellen Modus: "Projekt", "Desktop", "Verwerfen" und der  */
+/* Rest der Leiste kamen auf 2.49:1. Sie tragen die Knopfklassen des    */
+/* Adminbereichs, und deren Schriftfarbe folgt dem gewaehlten Modus -   */
+/* die Flaeche darunter aber nie, die ist hier immer dunkel. Im Hellen  */
+/* stand damit Dunkelgrau auf Dunkelblau.                              */
+/*                                                                     */
+/* Also nehmen die Knoepfe drinnen die Farben von drinnen. #9a9cb8      */
+/* erreicht auf #15162a 6.63:1, #eceefb 15.41:1.                       */
+/* ------------------------------------------------------------------ */
+
+.wa-editor .wa-btn {
+  --btn-bg: rgb(255 255 255 / 0.07);
+  --btn-fg: var(--wae-text);
+  --btn-border: var(--wae-rand);
+}
+
+.wa-editor .wa-btn--quiet {
+  --btn-bg: transparent;
+  --btn-fg: var(--wae-leise);
+  --btn-border: transparent;
+}
+
+.wa-editor .wa-btn--quiet:hover,
+.wa-editor .wa-btn--quiet:focus-visible { --btn-fg: var(--wae-text); }
+
+.wa-editor .wa-btn--quiet.is-active {
+  --btn-bg: rgb(255 255 255 / 0.1);
+  --btn-fg: var(--wae-text);
+}
+
+.wa-editor .wa-badge { color: var(--wae-leise); border-color: var(--wae-rand); }
+.wa-editor .wa-badge--ok { color: var(--wae-tuerkis); }
+.wa-editor .wa-badge--bad { color: var(--wae-gefahr); }
+/* Das Bernstein des Adminbereichs ist fuer helle Flaechen gemacht und
+   erreicht hier 2.x:1. Diese Stufe kommt auf 11.6:1. */
+.wa-editor .wa-badge--warn { color: #ffc861; }
+
+.wa-editor .wa-input {
+  background: rgb(255 255 255 / 0.05);
+  border-color: var(--wae-rand);
+  color: var(--wae-text);
+}
+
+/* ------------------------------------------------------------------ */
+/* Die Schleife: was hereinkam und was hinaus muss                      */
+/*                                                                     */
+/* Uebertragen wird von Hand - also stehen beide Enden dort, wo         */
+/* gearbeitet wird, und nicht auf einer anderen Seite.                 */
+/* ------------------------------------------------------------------ */
+
+.wa-editor__schleife {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.45rem 1rem;
+  background: color-mix(in srgb, var(--wae-flaeche) 70%, var(--wae-bg));
+  border-block-end: 1px solid var(--wae-rand);
+  font-size: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.wa-editor__zustand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--wae-leise);
+}
+
+/* Der Einwurf klappt auf, statt die Leiste dauerhaft zu verstopfen:
+   Hochgeladen wird einmal je Runde, veroeffentlicht dauernd. */
+.wa-editor__einwurf { position: relative; }
+.wa-editor__einwurf > summary { list-style: none; cursor: pointer; }
+.wa-editor__einwurf > summary::-webkit-details-marker { display: none; }
+
+.wa-editor__form {
+  position: absolute;
+  inset-block-start: calc(100% + 0.4rem);
+  inset-inline-end: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem;
+  border: 1px solid var(--wae-rand);
+  border-radius: 0.6rem;
+  background: var(--wae-flaeche);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
+  white-space: nowrap;
+}
+
+.wa-editor__form .wa-input { inline-size: 15rem; }
 
 .wa-editor__name { font-weight: 600; }
 

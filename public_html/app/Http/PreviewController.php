@@ -78,8 +78,17 @@ final class PreviewController
             return Response::notFound();
         }
 
-        $root = STORAGE_DIR . '/projects/' . (string) $project['slug'] . '/dist';
-        $file = self::resolve($root, (string) $request->param('path'));
+        $ordner = STORAGE_DIR . '/projects/' . (string) $project['slug'];
+        $pfad = (string) $request->param('path');
+
+        // Erst der gebaute Stand, dann der uebernommene.
+        //
+        // Eine fremde Website - ein ZIP aus dem Auftragstext - wird hier
+        // nie gebaut, hat aber seit dem Auspacken echte Dateien. Ohne
+        // diesen zweiten Ort stuende dort ewig ein Anfangsbuchstabe,
+        // obwohl die Seite dalaege.
+        $file = self::resolve($ordner . '/dist', $pfad)
+            ?? self::resolve($ordner . '/' . \WebAtze\Build\Uebernahme::ORDNER, $pfad);
 
         if ($file === null) {
             return Response::notFound();

@@ -274,29 +274,15 @@ final class Routes
             $r->post($base . '/projekt/{id}/loeschen', 'ProjectController@destroy');
             $r->post($base . '/projekt/{id}/support-schluessel', 'ProjectController@newSupportKeys');
             $r->post($base . '/projekt/{id}/zip', 'DeployController@createZip');
-            $r->post($base . '/projekt/{id}/hochladen', 'DeployController@deploy');
-            // Der umgekehrte Weg: holen statt hochladen. Auf Knopfdruck,
-            // nicht nach Zeitplan - die taegliche Sicherung gibt es
-            // bereits, und ein zweiter Automatismus verdoppelte Last
-            // und Speicherbedarf, ohne etwas hinzuzufuegen.
-            $r->post($base . '/projekt/{id}/stand-holen', 'DeployController@pullLive');
-            // Ein fertiges Archiv statt eines gebauten Pakets - der Weg
-            // ohne den eingebauten Generator.
-            $r->post($base . '/projekt/{id}/archiv', 'DeployController@uploadZip');
+            // Der Stand vom Kunden herein. Von hier aus geht nichts
+            // mehr hinaus: Drei Wege zum Kundenserver waren
+            // durchgemessen und alle drei tot. Uebertragen wird von
+            // Hand, mit einem FTP-Programm - WebAtze packt aus, laesst
+            // bearbeiten und packt wieder ein.
+            $r->post($base . '/projekt/{id}/uebernehmen', 'DeployController@uebernehmen');
+            // Die Zugangsdaten bleiben - zum Nachschlagen, nicht zum
+            // Verbinden.
             $r->post($base . '/projekt/{id}/ftp', 'DeployController@saveTarget');
-            $r->post($base . '/projekt/{id}/ftp/testen', 'DeployController@testTarget');
-            $r->post($base . '/projekt/{id}/ftp/ausgang', 'DeployController@ausgang');
-
-            // Der Weg ueber HTTPS: Empfangsdatei holen, nachsehen ob sie
-            // liegt, hinauf, herunter, und wieder wegraeumen. Er braucht
-            // keine FTP-Zugangsdaten, nur die Adresse der Website - und
-            // deshalb steht er auch nicht unter den FTP-Routen.
-            $r->get($base . '/projekt/{id}/empfaenger', 'DeployController@empfangsdatei');
-            $r->post($base . '/projekt/{id}/empfaenger/probe', 'DeployController@empfangProbe');
-            $r->post($base . '/projekt/{id}/empfaenger/weg', 'DeployController@empfangWeg');
-            $r->post($base . '/projekt/{id}/lesezugang/sperren', 'DeployController@leseZugangSperren');
-            $r->post($base . '/projekt/{id}/archiv-bruecke', 'DeployController@uploadUeberBruecke');
-            $r->post($base . '/projekt/{id}/stand-bruecke', 'DeployController@pullLiveBruecke');
             $r->post($base . '/projekt/{id}/domain', 'DomainController@save');
             $r->post($base . '/projekt/{id}/domain/pruefen', 'DomainController@check');
             $r->post($base . '/projekt/{id}/domain/schritt', 'DomainController@step');

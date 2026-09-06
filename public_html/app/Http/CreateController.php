@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WebAtze\Http;
 
-use WebAtze\Build\{FtpDeployer, ImageStore, Theme};
+use WebAtze\Build\{ImageStore, Theme, Zugang};
 use WebAtze\Core\{Audit, Config, Crypto, Db, Jobs, Logger, Request, Response, Session, View};
 use WebAtze\Domain\{Brief, Vault};
 
@@ -94,7 +94,7 @@ final class CreateController
 
                 // FTP-Zugang, falls angegeben
                 if ($brief['ftp_host'] !== '' && $brief['ftp_username'] !== '') {
-                    FtpDeployer::saveTarget($id, [
+                    Zugang::saveTarget($id, [
                         'protocol' => $brief['ftp_protocol'],
                         'host' => $brief['ftp_host'],
                         'port' => $brief['ftp_port'],
