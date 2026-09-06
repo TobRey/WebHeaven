@@ -33,17 +33,23 @@ final class ZipExporter
         }
 
         $slug = (string) $project['slug'];
-        $source = STORAGE_DIR . '/projects/' . $slug . '/dist';
 
-        // Ohne gebauten Stand: der uebernommene.
+        // Der bearbeitete Stand hat Vorrang vor dem gebauten.
         //
-        // Eine fremde Website wird hier nie gebaut - sie kommt als
-        // Archiv herein, wird bearbeitet und geht als Archiv hinaus.
-        // "Es gibt noch keine gebaute Website" waere fuer genau diesen
-        // Fall die falsche Auskunft: Es gibt sie, sie stammt nur nicht
-        // aus dem Generator.
+        // Vorher stand es andersherum: `dist` zuerst, `live` nur als
+        // Rückfall - und `ergaenzen()` überspringt, was schon im Archiv
+        // liegt. Für eine Website, die hier gebaut und später vom
+        // Kunden zurückgeholt wurde, hiess das: Jede Änderung aus dem
+        // Direkteditor landete in `live`, gepackt wurde aber `dist`,
+        // und die Änderung fehlte im Archiv. Ohne eine Meldung, ohne
+        // eine Spur.
+        //
+        // `live` ist das, woran zuletzt gearbeitet wurde. Also gewinnt
+        // es.
+        $source = Uebernahme::ordner($project);
+
         if (!is_dir($source)) {
-            $source = Uebernahme::ordner($project);
+            $source = STORAGE_DIR . '/projects/' . $slug . '/dist';
         }
 
         if (!is_dir($source)) {
@@ -81,8 +87,13 @@ final class ZipExporter
         //
         // Der Bau hat Vorrang: Was er erzeugt hat, liegt schon im
         // Archiv und wird nicht ueberschrieben.
-        if ($source !== Uebernahme::ordner($project)) {
-            $files += self::ergaenzen($zip, Uebernahme::ordner($project));
+        // Was der bearbeitete Stand nicht hat, kommt aus dem gebauten
+        // dazu - aber nur das. Was in beiden liegt, gehört dem
+        // bearbeiteten.
+        $gebaut = STORAGE_DIR . '/projects/' . $slug . '/dist';
+
+        if ($source !== $gebaut && is_dir($gebaut)) {
+            $files += self::ergaenzen($zip, $gebaut);
         }
 
         // Eine Anleitung, die auch in einem Jahr noch verständlich ist.

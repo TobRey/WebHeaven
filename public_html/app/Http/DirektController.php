@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace WebAtze\Http;
 
-use WebAtze\Build\{Maske, Staende, Uebernahme};
+use WebAtze\Build\{Karte, Maske, Staende, Uebernahme};
 use WebAtze\Core\{Audit, Config, Db, Request, Response, Session, View};
 
 /**
@@ -148,12 +148,18 @@ final class DirektController
 
         $inhalt = (string) file_get_contents($datei);
 
-        // Eine PHP-Datei geht ohne ihren Code hinaus.
+        // Jedem Element seine Nummer mitgeben.
         //
+        // Sie ist die Verbindung zwischen dem, was im Rahmen steht, und
+        // dem, was in der Datei steht. Ohne sie muesste beim Speichern
+        // das ganze Dokument zurueckgeschickt werden - und genau daran
+        // ist der alte Editor gescheitert: Was der Browser
+        // zurueckgibt, ist nie die Datei, die hineinging.
+        $inhalt = Karte::nummerieren($inhalt, Karte::lesen($inhalt));
+
+        // Und bei einer PHP-Datei geht der Code nicht mit hinaus.
         // Ausfuehren kaeme nicht in Frage - das waere fremder Code auf
-        // dem eigenen Server. Also bleibt er stehen und wird
-        // weggeblendet: Was im Rahmen ankommt, ist das HTML-Geruest mit
-        // seinen Texten, die Bloecke sind unsichtbare Platzhalter.
+        // dem eigenen Server.
         if (Maske::istPhp($datei)) {
             $inhalt = Maske::maskieren($inhalt)['html'];
             $endung = 'html';
@@ -174,6 +180,24 @@ final class DirektController
     // ------------------------------------------------------------------
 
     /** Eine bearbeitete Seite zurückschreiben. */
+    /**
+     * Speichern - aber nur die Stellen, die sich geändert haben.
+     *
+     * Der alte Weg schickte das **ganze Dokument** aus dem Browser
+     * zurück und überschrieb die Datei damit. Das ging so lange gut,
+     * bis es das nicht mehr tat - und dann war nicht zu sehen, woran es
+     * lag: Der Browser gibt nie zurück, was er bekommen hat. Er
+     * normalisiert beim Einlesen, und was zurückkam, war gleichwertig,
+     * aber nie identisch.
+     *
+     * Jetzt kommt eine Liste von Änderungen, jede mit der Nummer ihres
+     * Elements. Angefasst wird nur, was darin steht; der Rest der Datei
+     * bleibt Byte für Byte stehen.
+     *
+     * Und danach wird **zurückgelesen und geprüft**. "Gespeichert"
+     * heisst hier: Es steht nachweislich in der Datei - nicht bloss:
+     * abgeschickt, kein Fehler.
+     */
     public function speichern(Request $request): Response
     {
         $projekt = ProjectController::find($request->paramInt('id'));
@@ -189,71 +213,271 @@ final class DirektController
             return Response::json(['ok' => false, 'error' => 'Diese Seite lässt sich nicht bearbeiten.'], 400)->noCache();
         }
 
-        // Ungefiltert, und das ist hier die einzige richtige Wahl:
-        // `input()` schneidet bei 2000 Zeichen ab und entfernt jeden
-        // Zeilenumbruch. Eine Kundenseite kaeme damit gekuerzt und
-        // einzeilig an - und die Laengenpruefung darunter saehe eine
-        // Zahl, die schon nicht mehr stimmt.
-        $inhalt = $request->roh('inhalt', self::MAX_SEITE_BYTES);
+        $liste = json_decode($request->roh('aenderungen', 2 * 1024 * 1024), true);
 
-        if ($inhalt === '') {
+        if (!is_array($liste) || $liste === []) {
             return Response::json([
                 'ok' => false,
-                'error' => 'Es kam nichts an - oder die Seite ist grösser als '
-                    . format_bytes(self::MAX_SEITE_BYTES) . '.',
+                'error' => 'Es kam keine Änderung an.',
             ], 400)->noCache();
         }
 
-        // Bei einer PHP-Seite kommt der Code zurueck an seinen Platz.
-        //
-        // Und vorher die Frage, an der die Datei des Kunden haengt: Ist
-        // noch jeder Block da? Wer einen Absatz loescht, loescht mit ihm
-        // jeden Platzhalter darin - und das waere PHP-Code, der danach
-        // fehlt. Eine Seite, der etwas fehlt, wird nicht geschrieben.
-        if (Maske::istPhp($datei)) {
-            $urspruenglich = Maske::maskieren((string) @file_get_contents($datei));
-            $fehlend = Maske::fehlende($inhalt, $urspruenglich['bloecke']);
+        $quelle = (string) @file_get_contents($datei);
 
-            if ($fehlend !== []) {
-                return Response::json([
-                    'ok' => false,
-                    'error' => sprintf(
-                        'Nicht gespeichert: %d PHP-Stelle(n) dieser Seite wären dabei '
-                        . 'verlorengegangen. Das passiert, wenn ein Bereich gelöscht wird, '
-                        . 'in dem Code steckt.',
-                        count($fehlend)
+        // Ist die Datei noch die, an der gearbeitet wurde?
+        //
+        // Zwischen Öffnen und Speichern kann ein neues Archiv
+        // hochgeladen oder ein Stand wiederhergestellt worden sein.
+        // Dann zeigen die Nummern woandershin, als der Bearbeiter
+        // meint - und geschrieben würde an einer Stelle, die er nie
+        // gesehen hat.
+        $finger = (string) $request->input('finger');
+
+        if ($finger !== '' && $finger !== Karte::finger($quelle)) {
+            return Response::json([
+                'ok' => false,
+                'neuLaden' => true,
+                'error' => 'Diese Seite hat sich inzwischen geändert. Lade sie neu, '
+                    . 'sonst würde an der falschen Stelle geschrieben.',
+            ], 409)->noCache();
+        }
+
+        $ergebnis = self::anwenden($quelle, $liste);
+
+        if ($ergebnis['error'] !== '') {
+            return Response::json(['ok' => false, 'error' => $ergebnis['error']], 400)->noCache();
+        }
+
+        if ($ergebnis['inhalt'] === $quelle) {
+            return Response::json([
+                'ok' => true, 'geaendert' => 0,
+                'finger' => Karte::finger($quelle),
+            ])->noCache();
+        }
+
+        // Auf die Byte-Zahl prüfen, nicht auf `false`.
+        //
+        // Bei vollem Kontingent schreibt `file_put_contents` so viel es
+        // kann und gibt die Anzahl zurück - nicht `false`. Eine Prüfung
+        // auf `=== false` hielte das für Erfolg, und die Seite des
+        // Kunden wäre mitten im HTML abgeschnitten.
+        $geschrieben = @file_put_contents($datei, $ergebnis['inhalt'], LOCK_EX);
+
+        if ($geschrieben !== strlen($ergebnis['inhalt'])) {
+            return Response::json([
+                'ok' => false,
+                'error' => $geschrieben === false
+                    ? 'Die Seite liess sich nicht schreiben. Fehlt dem Ordner das Schreibrecht?'
+                    : sprintf(
+                        'Nur %d von %d Bytes geschrieben - das Konto ist vermutlich voll. '
+                        . 'Die Seite ist jetzt unvollständig; stelle sie über einen älteren '
+                        . 'Stand wieder her.',
+                        (int) $geschrieben,
+                        strlen($ergebnis['inhalt'])
                     ),
-                ], 409)->noCache();
-            }
-
-            $inhalt = Maske::demaskieren($inhalt, $urspruenglich['bloecke']);
+            ], 500)->noCache();
         }
 
-        // Zeilenenden so lassen, wie die Datei sie hatte.
-        //
-        // Ein Formularfeld kommt laut Norm mit CRLF an - der Browser
-        // stellt das beim Absenden um. Ohne diesen Schritt haette jede
-        // gespeicherte Seite andere Zeilenenden als vorher: gerendert
-        // dasselbe, im Vergleich mit dem Original aber jede Zeile
-        // geaendert. Wer danach zwei Staende vergleicht, sieht nur noch
-        // Rauschen.
-        $inhalt = self::zeilenendenAngleichen($inhalt, $datei);
+        // Zurücklesen. Das ist der Unterschied zu vorher.
+        clearstatcache(true, $datei);
+        $danach = (string) @file_get_contents($datei);
 
-        if (@file_put_contents($datei, $inhalt, LOCK_EX) === false) {
-            return Response::json(['ok' => false, 'error' => 'Die Seite liess sich nicht schreiben.'], 500)->noCache();
+        if ($danach !== $ergebnis['inhalt']) {
+            return Response::json([
+                'ok' => false,
+                'error' => 'Geschrieben, aber die Datei enthält danach etwas anderes. '
+                    . 'Das deutet auf ein volles Konto oder einen zweiten Zugriff hin.',
+            ], 500)->noCache();
         }
 
-        // Damit die Liste weiss, dass etwas draussen noch fehlt.
         Db::update('projects', ['updated_at' => Db::now()], 'id = :id', ['id' => (int) $projekt['id']]);
-
-        // Und damit im Fenster steht, wann zuletzt gespeichert wurde.
-        // Das ist die Angabe, an der man erkennt, ob der Klick etwas
-        // bewirkt hat - ohne sie bleibt nur, es zu glauben.
         Staende::gespeichert((int) $projekt['id']);
 
-        Audit::log('direkt.gespeichert', (string) $projekt['name'], ['seite' => $pfad], $request);
+        Audit::log('direkt.gespeichert', (string) $projekt['name'], [
+            'seite' => $pfad,
+            'aenderungen' => $ergebnis['anzahl'],
+        ], $request);
 
-        return Response::json(['ok' => true, 'bytes' => strlen($inhalt)])->noCache();
+        return Response::json([
+            'ok' => true,
+            'geaendert' => $ergebnis['anzahl'],
+            'bytes' => strlen($danach),
+            'finger' => Karte::finger($danach),
+        ])->noCache();
+    }
+
+    /**
+     * Die Änderungen auf den Text anwenden.
+     *
+     * Jede Änderung wird erst in eine **Byte-Ersetzung** übersetzt -
+     * "von hier bis dort steht künftig das" -, und alle zusammen werden
+     * dann von hinten nach vorn eingesetzt.
+     *
+     * Warum nicht eine nach der anderen: Jede Ersetzung verschiebt
+     * alles dahinter. Wer die zweite Änderung mit den Grenzen der
+     * unveränderten Datei einsetzt, trifft daneben - und zwar nicht
+     * knapp, sondern um genau so viele Zeichen, wie die erste länger
+     * oder kürzer war. Dabei entsteht eine Datei, die aussieht, als
+     * hätte jemand mit der Schere hineingeschnitten. Rückwärts bleibt
+     * jede Grenze gültig, bis sie an der Reihe ist.
+     *
+     * Und wenn zwei Ersetzungen einander überlappen, wird gar nichts
+     * geschrieben. Zwei Änderungen an derselben Stelle sind kein Fall,
+     * den man erraten sollte.
+     *
+     * @return array{inhalt:string, anzahl:int, error:string}
+     */
+    private static function anwenden(string $quelle, array $liste): array
+    {
+        $karte = Karte::lesen($quelle);
+        $schnitte = [];
+
+        foreach ($liste as $eintrag) {
+            if (!is_array($eintrag)) {
+                continue;
+            }
+
+            $id = (int) ($eintrag['id'] ?? -1);
+            $was = (string) ($eintrag['was'] ?? '');
+
+            // Neue Bausteine tragen negative Nummern - sie stehen noch
+            // nicht in der Datei und werden über ihren Anker gesetzt.
+            if ($was === 'einfuegen') {
+                $anker = (int) ($eintrag['id2'] ?? $eintrag['anker'] ?? -1);
+
+                if (!isset($karte[$anker])) {
+                    return self::fehler(sprintf('Die Stelle für den neuen Baustein (%d) gibt es nicht.', $anker), $quelle);
+                }
+
+                $stelle = ($eintrag['davor'] ?? false)
+                    ? $karte[$anker]['von']
+                    : $karte[$anker]['bis'];
+
+                $schnitte[] = ['von' => $stelle, 'bis' => $stelle, 'text' => (string) ($eintrag['wert'] ?? '')];
+
+                continue;
+            }
+
+            if (!isset($karte[$id])) {
+                return self::fehler(sprintf('Element %d gibt es in dieser Seite nicht (mehr).', $id), $quelle);
+            }
+
+            $el = $karte[$id];
+
+            // Ein Bereich, in dem PHP steckt, wird nicht als Text
+            // überschrieben - dabei ginge der Code des Kunden verloren.
+            if (in_array($was, ['text', 'entfernen'], true)
+                && str_contains(self::inhaltVon($quelle, $el), '<?')
+            ) {
+                return self::fehler(
+                    'In diesem Bereich steckt PHP. Er lässt sich nicht als Text ändern, '
+                    . 'weil dabei der Code verlorenginge.',
+                    $quelle
+                );
+            }
+
+            switch ($was) {
+                case 'text':
+                    $schnitte[] = ['von' => $el['inhaltVon'], 'bis' => $el['inhaltBis'],
+                        'text' => (string) ($eintrag['wert'] ?? '')];
+                    break;
+
+                case 'stil':
+                case 'attribut':
+                    $name = $was === 'stil'
+                        ? 'style'
+                        : (preg_replace('~[^a-z0-9-]~i', '', (string) ($eintrag['name'] ?? '')) ?: 'data-x');
+
+                    // Das Tag für sich neu bauen und als Ganzes ersetzen.
+                    $tagNeu = Karte::attributSetzen(
+                        substr($quelle, $el['von'], $el['inhaltVon'] - $el['von']),
+                        ['von' => 0, 'inhaltVon' => $el['inhaltVon'] - $el['von']],
+                        $name,
+                        (string) ($eintrag['wert'] ?? '')
+                    );
+
+                    $schnitte[] = ['von' => $el['von'], 'bis' => $el['inhaltVon'], 'text' => $tagNeu];
+                    break;
+
+                case 'entfernen':
+                    $schnitte[] = ['von' => $el['von'], 'bis' => $el['bis'], 'text' => ''];
+                    break;
+
+                case 'tausch':
+                    $mit = (int) ($eintrag['mit'] ?? -1);
+
+                    if (!isset($karte[$mit])) {
+                        return self::fehler(sprintf('Der Tauschpartner (%d) gibt es nicht.', $mit), $quelle);
+                    }
+
+                    $b = $karte[$mit];
+
+                    // Ineinander geschachtelte lassen sich nicht
+                    // tauschen: Das eine ist Teil des anderen, und
+                    // danach gäbe es beide zweimal oder gar nicht.
+                    if (($el['von'] >= $b['von'] && $el['bis'] <= $b['bis'])
+                        || ($b['von'] >= $el['von'] && $b['bis'] <= $el['bis'])
+                    ) {
+                        return self::fehler(
+                            'Diese beiden Blöcke liegen ineinander - sie lassen sich nicht tauschen.',
+                            $quelle
+                        );
+                    }
+
+                    // Zwei Ersetzungen, jede mit dem Text der anderen.
+                    $schnitte[] = ['von' => $el['von'], 'bis' => $el['bis'],
+                        'text' => substr($quelle, $b['von'], $b['bis'] - $b['von'])];
+                    $schnitte[] = ['von' => $b['von'], 'bis' => $b['bis'],
+                        'text' => substr($quelle, $el['von'], $el['bis'] - $el['von'])];
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        if ($schnitte === []) {
+            return ['inhalt' => $quelle, 'anzahl' => 0, 'error' => ''];
+        }
+
+        // Von hinten nach vorn - und vorher nachsehen, ob sich zwei in
+        // die Quere kommen.
+        usort($schnitte, static fn (array $a, array $b): int => $b['von'] <=> $a['von']);
+
+        $letzterAnfang = strlen($quelle) + 1;
+
+        foreach ($schnitte as $schnitt) {
+            if ($schnitt['bis'] > $letzterAnfang) {
+                return self::fehler(
+                    'Zwei Änderungen betreffen dieselbe Stelle. Speichere sie einzeln - '
+                    . 'zusammen wäre nicht zu entscheiden, welche gilt.',
+                    $quelle
+                );
+            }
+
+            $letzterAnfang = $schnitt['von'];
+        }
+
+        $inhalt = $quelle;
+
+        foreach ($schnitte as $schnitt) {
+            $inhalt = substr($inhalt, 0, $schnitt['von'])
+                . $schnitt['text']
+                . substr($inhalt, $schnitt['bis']);
+        }
+
+        return ['inhalt' => $inhalt, 'anzahl' => count($schnitte), 'error' => ''];
+    }
+
+    /** @return array{inhalt:string, anzahl:int, error:string} */
+    private static function fehler(string $text, string $quelle): array
+    {
+        return ['inhalt' => $quelle, 'anzahl' => 0, 'error' => $text];
+    }
+
+    private static function inhaltVon(string $quelle, array $element): string
+    {
+        return substr($quelle, $element['inhaltVon'], $element['inhaltBis'] - $element['inhaltVon']);
     }
 
     /**

@@ -2298,6 +2298,159 @@ test('Was hochgeladen wird, kommt beim Besucher auch an', function (): void {
 });
 
 // ==================================================================
+test('Die Karte trifft jedes Element auf das Byte genau', function (): void {
+    // Der Kern des neuen Speicherns. Frueher ging die ganze Seite durch
+    // den Browser und zurueck; jetzt wird eine Stelle ersetzt und alles
+    // andere bleibt Zeichen fuer Zeichen liegen.
+    $quelle = '<?php $t = "x"; ?>' . "\n"
+        . '<!doctype html><html><head><title><?= $t ?></title></head>'
+        . '<body class="a <?php echo $k; ?>">'
+        . '<section id="eins"><h2>Alt</h2><p>Text eins</p></section>'
+        . '<section id="zwei"><h2>Zwei</h2></section>'
+        . '<table><tr><td>Zelle</td></tr></table>'
+        . '<a title="a > b" href="#">Link</a>'
+        . '</body></html>';
+
+    $karte = \WebAtze\Build\Karte::lesen($quelle);
+
+    // Die Reihenfolge ist die des Dokuments - dieselbe, in der ein
+    // Browser zaehlt. Daran haengt alles: Laufen die Nummern
+    // auseinander, wird an der falschen Stelle geschrieben.
+    $tags = array_map(static fn (array $e): string => $e['tag'], $karte);
+
+    is(['html', 'head', 'title', 'body', 'section', 'h2', 'p', 'section', 'h2',
+        'table', 'tr', 'td', 'a'], array_values($tags),
+        'Die Elemente stehen in Dokumentreihenfolge');
+
+    // Das `>` im Attribut beendet das Tag nicht.
+    $verweis = null;
+    foreach ($karte as $e) { if ($e['tag'] === 'a') { $verweis = $e; } }
+    is('Link', \WebAtze\Build\Karte::textVon($quelle, $verweis),
+        'Ein Groesserzeichen im Attribut wird nicht fuer ein Tagende gehalten');
+
+    // Und jetzt der Beweis: eine Stelle aendern, alles andere bleibt.
+    $ziel = null;
+    foreach ($karte as $e) {
+        if (\WebAtze\Build\Karte::textVon($quelle, $e) === 'Text eins') { $ziel = $e; }
+    }
+
+    $neu = \WebAtze\Build\Karte::inhaltSetzen($quelle, $ziel, 'Text eins, geaendert');
+
+    is(substr($quelle, 0, $ziel['inhaltVon']), substr($neu, 0, $ziel['inhaltVon']),
+        'Alles vor der Stelle ist Byte fuer Byte dasselbe');
+    is(substr($quelle, $ziel['inhaltBis']), substr($neu, $ziel['inhaltBis'] + 11),
+        'Und alles dahinter ebenso');
+
+    preg_match_all('~<\?(?:php|=).*?\?>~s', $quelle, $vorher);
+    preg_match_all('~<\?(?:php|=).*?\?>~s', $neu, $nachher);
+    is($vorher[0], $nachher[0], 'Der PHP-Code ist unveraendert');
+
+    // Attribute setzen, entfernen, tauschen.
+    $mit = \WebAtze\Build\Karte::attributSetzen($quelle, $ziel, 'style', 'color:red');
+    ok(str_contains($mit, '<p style="color:red">'), 'Ein Attribut kommt hinter den Tagnamen');
+
+    $ohne = \WebAtze\Build\Karte::attributSetzen($mit, \WebAtze\Build\Karte::lesen($mit)[6], 'style', '');
+    ok(!str_contains($ohne, 'style='), 'Ein leerer Wert entfernt es wieder');
+
+    $a = $karte[4];
+    $b = $karte[7];
+    $getauscht = \WebAtze\Build\Karte::tauschen($quelle, $a, $b);
+
+    ok(strpos($getauscht, 'id="zwei"') < strpos($getauscht, 'id="eins"'),
+        'Zwei Abschnitte tauschen die Plaetze');
+    is(strlen($quelle), strlen($getauscht), 'Und dabei geht kein Zeichen verloren');
+
+    // Ineinander geschachtelte lassen sich nicht tauschen - dabei gaebe
+    // es das eine hinterher zweimal oder gar nicht.
+    ok(\WebAtze\Build\Karte::tauschen($quelle, $karte[4], $karte[5]) === null,
+        'Was ineinander liegt, wird nicht getauscht');
+});
+
+// ==================================================================
+test('Der Browser zaehlt dieselben Nummern wie die Datei', function (): void {
+    // Die Nummer kommt vom Server und steht im Tag. Der Browser liest
+    // sie ab, statt selbst zu zaehlen - denn er zaehlt anders: Er fuegt
+    // ein <tbody> ein, das nirgends steht, und schliesst, was offen
+    // blieb. Zaehlte jede Seite fuer sich, wuerde beim Speichern die
+    // falsche Stelle getroffen.
+    $quelle = '<!doctype html><html><body>'
+        . '<table><tr><td>Zelle</td></tr></table>'
+        . '<ul><li>Eins<li>Zwei</ul>'
+        . '</body></html>';
+
+    $karte = \WebAtze\Build\Karte::lesen($quelle);
+    $nummeriert = \WebAtze\Build\Karte::nummerieren($quelle, $karte);
+
+    foreach ($karte as $nummer => $element) {
+        ok(str_contains($nummeriert, 'data-wa-id="' . $nummer . '"'),
+            'Element ' . $nummer . ' (' . $element['tag'] . ') traegt seine Nummer');
+    }
+
+    // Der Kurzfinger merkt, wenn die Datei sich zwischendurch aendert.
+    $finger = \WebAtze\Build\Karte::finger($quelle);
+
+    is($finger, \WebAtze\Build\Karte::finger($quelle), 'Derselbe Text, derselbe Finger');
+    ok($finger !== \WebAtze\Build\Karte::finger($quelle . ' '),
+        'Ein anderer Text, ein anderer Finger');
+});
+
+// ==================================================================
+test('Aus NULL wird keine leere Datei', function (): void {
+    // Hier stand `(string) preg_replace_callback(...)`. Gibt PCRE bei
+    // einem Limit NULL zurueck, macht der Cast daraus eine leere
+    // Zeichenkette - und die Waechter darueber liessen sie durch, weil
+    // die Trefferzahl per Referenz schon hochgezaehlt war. Am Ende
+    // stuende file_put_contents($datei, '') da: die Seite des Kunden,
+    // auf null Bytes.
+    $quelle = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Build/Frische.php'
+    );
+
+    // Auf den Code pruefen, nicht auf die Prosa: Der Kommentar daneben
+    // nennt den alten Ausdruck absichtlich - er erklaert ja, was hier
+    // schiefging.
+    ok(!str_contains($quelle, 'return (string) preg_replace_callback'),
+        'Der Cast, der NULL zu einer leeren Datei macht, ist weg');
+    ok(str_contains($quelle, 'if ($neu === null)'),
+        'Stattdessen wird auf NULL geprueft');
+    ok(str_contains($quelle, 'return $html;'),
+        'Und die Datei bleibt, wie sie ist');
+
+    // Dasselbe Muster beim Schreiben: file_put_contents gibt bei vollem
+    // Konto die Byte-Zahl zurueck, nicht false.
+    ok(str_contains($quelle, 'private static function sicherSchreiben'),
+        'Geschrieben wird ueber eine Pruefung');
+    ok(str_contains($quelle, '$geschrieben === strlen($inhalt)'),
+        'Und die vergleicht die Byte-Zahl, nicht nur auf false');
+
+    $direkt = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Http/DirektController.php'
+    );
+
+    ok(str_contains($direkt, "\$geschrieben !== strlen(\$ergebnis['inhalt'])"),
+        'Auch der Speicherweg prueft die Byte-Zahl');
+});
+
+// ==================================================================
+test('Der bearbeitete Stand hat Vorrang vor dem gebauten', function (): void {
+    // Eine Website, die hier gebaut und spaeter vom Kunden
+    // zurueckgeholt wurde, hat beides: dist und live. Gepackt wurde
+    // dist - und jede Aenderung aus dem Direkteditor liegt in live.
+    // Sie fehlte damit im Archiv, ohne Meldung und ohne Spur.
+    $quelle = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Build/ZipExporter.php'
+    );
+
+    $zuerst = strpos($quelle, 'Uebernahme::ordner($project)');
+    $dann = strpos($quelle, "'/dist'");
+
+    ok($zuerst !== false && $dann !== false && $zuerst < $dann,
+        'Der bearbeitete Stand wird zuerst genommen');
+    ok(str_contains($quelle, 'if (!is_dir($source))'),
+        'Der gebaute nur, wenn es keinen bearbeiteten gibt');
+});
+
+// ==================================================================
 test('PHP kommt aus dem Editor zurueck, wie es hineinging', function (): void {
     // Hier haengt die Datei des Kunden dran. Eine PHP-Seite wird zum
     // Bearbeiten weggeblendet und danach zurueckgesetzt - kommt dabei
@@ -2394,8 +2547,53 @@ test('Der Editor findet auch Seiten, die nicht .html heissen', function (): void
     ok(preg_match("~SEITEN = \[[^\]]*'php'~", $quelle) === 1,
         'PHP-Seiten stehen in der Liste');
     ok(str_contains($quelle, 'Maske::maskieren'), 'Beim Ausliefern wird weggeblendet');
-    ok(str_contains($quelle, 'Maske::demaskieren'), 'Beim Speichern zurueckgesetzt');
-    ok(str_contains($quelle, 'Maske::fehlende'), 'Und vorher geprueft, ob noch alles da ist');
+
+    // Beim Speichern braucht es das Zuruecksetzen nicht mehr: Die
+    // Karte ersetzt einzelne Stellen in der Originaldatei, und der
+    // PHP-Code darin wird gar nicht erst angefasst.
+    ok(str_contains($quelle, 'Karte::lesen'), 'Gespeichert wird ueber die Karte');
+
+    // Diese Zusage wurde einmal als Textsuche geprueft - und die
+    // schlug an dem Tag fehl, an dem dieselbe Bedingung eine Zeile
+    // hoeher in eine Variable wanderte. Geprueft wird jetzt, was
+    // passiert, nicht wie es geschrieben steht.
+    $anwenden = new ReflectionMethod(\WebAtze\Http\DirektController::class, 'anwenden');
+    $anwenden->setAccessible(true);
+
+    $seite = '<div><p>Frei</p><p><?= $name ?></p></div>';
+    $karte = \WebAtze\Build\Karte::lesen($seite);
+
+    $mitPhp = null;
+    $ohnePhp = null;
+
+    foreach ($karte as $nr => $el) {
+        if ($el['tag'] !== 'p') {
+            continue;
+        }
+
+        $inhalt = substr($seite, $el['inhaltVon'], $el['inhaltBis'] - $el['inhaltVon']);
+        str_contains($inhalt, '<?') ? $mitPhp = $nr : $ohnePhp = $nr;
+    }
+
+    ok($mitPhp !== null && $ohnePhp !== null, 'Beide Absaetze sind auffindbar');
+
+    // Der Absatz mit PHP darin: abgelehnt, und die Datei bleibt, wie sie war.
+    $ab = $anwenden->invoke(null, $seite, [['id' => $mitPhp, 'was' => 'text', 'wert' => 'Weg damit']]);
+    ok($ab['error'] !== '', 'Text ueber PHP wird abgelehnt');
+    is($seite, $ab['inhalt'], 'Und die Seite bleibt unveraendert');
+    is(0, $ab['anzahl'], 'Gezaehlt wird dabei nichts');
+
+    // Loeschen ebenso - dabei ginge derselbe Code verloren.
+    $ab = $anwenden->invoke(null, $seite, [['id' => $mitPhp, 'was' => 'entfernen']]);
+    ok($ab['error'] !== '', 'Loeschen ueber PHP ebenso');
+    is($seite, $ab['inhalt'], 'Auch hier bleibt die Seite stehen');
+
+    // Der Absatz daneben laesst sich sehr wohl aendern - sonst waere
+    // die Sperre bloss ein Editor, der nichts tut.
+    $ok = $anwenden->invoke(null, $seite, [['id' => $ohnePhp, 'was' => 'text', 'wert' => 'Neuer Text']]);
+    is('', $ok['error'], 'Der Absatz ohne PHP geht durch');
+    ok(str_contains($ok['inhalt'], '<p>Neuer Text</p>'), 'Und traegt den neuen Text');
+    ok(str_contains($ok['inhalt'], '<?= $name ?>'), 'Der PHP-Block daneben steht unberuehrt da');
 
     // Ausgefuehrt wird nie etwas - das ist die Bedingung, unter der man
     // fremdes PHP ueberhaupt anfassen darf.
@@ -2405,24 +2603,103 @@ test('Der Editor findet auch Seiten, die nicht .html heissen', function (): void
 
 // ==================================================================
 test('Vom Werkzeug bleibt nichts in der Kundendatei', function (): void {
-    // Frueher stand hier eine Liste einzelner Attributnamen. Die
-    // vergisst man beim naechsten Werkzeug - und dann steht sie beim
-    // Kunden. Deshalb faengt die Regel jetzt alles ab, was mit
-    // data-wa- beginnt.
-    $js = (string) file_get_contents(
-        dirname(__DIR__) . '/frontend/src/direkt/direkt.js'
-    );
+    // Das ganze Dokument zurueckzuschicken gibt es nicht mehr. Der
+    // Editor schickt eine Liste von Aenderungen, und der Server fasst
+    // nur die genannten Stellen an - was das Werkzeug in den Rahmen
+    // schreibt, kommt damit gar nicht erst in die Naehe der Datei.
+    $js = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/direkt/direkt.js');
 
-    ok(str_contains($js, "a.name.startsWith('data-wa-')"),
-        'Jedes data-wa-Attribut fliegt hinaus, nicht eine gepflegte Liste');
+    ok(!str_contains($js, 'function alsHtml'),
+        'Das Serialisieren des ganzen Dokuments ist weg');
+    ok(str_contains($js, "formular.append('aenderungen'"),
+        'Geschickt wird eine Aenderungsliste');
+    ok(str_contains($js, 'buch.merken('),
+        'Und gefuellt wird sie beim Aendern, nicht beim Speichern');
 
-    // Und das ganze Dokument wird serialisiert, nicht nur <html>: Bei
-    // einer PHP-Seite steht der erste Block fast immer VOR dem Doctype,
-    // und documentElement.cloneNode() verlor ihn stillschweigend.
-    ok(str_contains($js, 'for (const knoten of dok.childNodes)'),
-        'Serialisiert wird das ganze Dokument');
-    ok(!str_contains($js, 'dok.documentElement.cloneNode'),
-        'Und nicht mehr nur das html-Element');
+    // Die eingesetzten Bausteine sind die einzige Stelle, an der noch
+    // HTML aus dem Browser kommt - dort wird die Marke abgestreift.
+    ok(str_contains($js, "replace(/\\sdata-wa-[a-z-]*=\"[^\"]*\"/g, '')"),
+        'Ein eingesetzter Baustein geht ohne Marke hinaus');
+});
+
+// ==================================================================
+test('Jede Feldart wird auch gezeichnet', function (): void {
+    // Gefunden im Browser: "Ausschnitt" und "Position" standen als
+    // Zahlenfelder da - "Position: 0". Der Grund war eine fehlende
+    // Verzweigung: Wer keine kennt, faellt bis ans Ende durch, und
+    // dort steht das Zahlenfeld. Es sah aus wie eine Einstellung und
+    // war keine.
+    //
+    // Geprueft wird darum nicht das eine Feld, sondern die Regel: Zu
+    // jeder Art, die in FELDER vorkommt, muss es einen Zweig geben.
+    $verzeichnis = dirname(__DIR__) . '/frontend/src/direkt/';
+    $felder = (string) file_get_contents($verzeichnis . 'einstellungen.js');
+    $zeichnet = (string) file_get_contents($verzeichnis . 'direkt.js');
+
+    preg_match_all("~\bart:\s*'([a-z]+)'~", $felder, $treffer);
+    $arten = array_unique($treffer[1]);
+
+    ok($arten !== [], sprintf('Es gibt Feldarten (%d)', count($arten)));
+
+    foreach ($arten as $art) {
+        // Ob der Zweig auf Gleichheit prueft oder als letzter auf
+        // Ungleichheit, ist einerlei - die Art muss beim Zeichnen
+        // vorkommen, damit sie nicht stillschweigend als etwas
+        // anderes erscheint.
+        ok(preg_match("~f\\.art\\s*[!=]==\\s*'" . preg_quote($art, '~') . "'~", $zeichnet) === 1,
+            sprintf('Die Art "%s" wird beim Zeichnen genannt', $art));
+    }
+});
+
+// ==================================================================
+test('Die Bestätigung überlebt das Neuladen des Rahmens', function (): void {
+    // Gefunden im Browser, nicht hier: Speichern meldete "1 Änderung
+    // gespeichert" - und keine Sekunde später stand wieder "bereit"
+    // da. Denn zum Speichern gehoert, dass der Rahmen die frisch
+    // geschriebene Datei neu holt, und der Rahmen meldet nach dem
+    // Laden seinen Zustand.
+    //
+    // Das ist genau die Klage, die diesen Umbau ausgeloest hat, nur
+    // eine Nummer kleiner: Wer nicht sieht, dass gespeichert wurde,
+    // muss es glauben.
+    $js = (string) file_get_contents(dirname(__DIR__) . '/frontend/src/direkt/direkt.js');
+
+    // Geprueft wird der Aufbau, nicht die Schreibweise: Welcher Name
+    // die Bestaetigung traegt, ist gleichgueltig - er muss nur beim
+    // Speichern gesetzt und beim Laden des Rahmens gelesen werden.
+    $gefunden = preg_match(
+        '~(\w+)\s*=\s*[^;]*?gespeichert~s',
+        $js,
+        $treffer
+    ) === 1;
+
+    ok($gefunden, 'Die Bestätigung wird in einer Variablen gemerkt');
+
+    if (!$gefunden) {
+        return;
+    }
+
+    $name = $treffer[1];
+
+    // Der Rumpf des Laden-Horchers am Rahmen.
+    $hat = preg_match("~rahmen\\??\\.addEventListener\\('load'~", $js, $wo, PREG_OFFSET_CAPTURE) === 1;
+    ok($hat, 'Es gibt einen Horcher für das Laden des Rahmens');
+
+    if (!$hat) {
+        return;
+    }
+
+    $rumpf = substr($js, (int) $wo[0][1], 3000);
+
+    ok(str_contains($rumpf, "melden('bereit')"),
+        'Er meldet im Normalfall "bereit"');
+    ok(str_contains($rumpf, $name),
+        sprintf('Und liest vorher die gemerkte Bestätigung ($%s)', $name));
+
+    // Und sie gilt nur einmal - sonst stuende sie nach jedem spaeteren
+    // Neuladen wieder da, ohne dass etwas gespeichert wurde.
+    ok(preg_match('~' . preg_quote($name, '~') . "\s*=\s*''~", $rumpf) === 1,
+        'Danach wird sie geleert - sie gilt für dieses eine Neuladen');
 });
 
 // ==================================================================
@@ -3859,40 +4136,23 @@ test('Eine fremde Website laesst sich direkt bearbeiten', function (): void {
 });
 
 // ==================================================================
-test('Eine ganze Seite kommt ungekuerzt an', function (): void {
-    // Der Fehler, den der Durchgang gefunden hat: Gespeichert wurde mit
-    // input(), und das schneidet bei 2000 Zeichen ab und entfernt jeden
-    // Zeilenumbruch. Die Kundenseite stand danach in einer einzigen
-    // Zeile - und war ab dem zweitausendsten Zeichen weg. Die
-    // Laengenpruefung dahinter sah eine Zahl, die schon nicht mehr
-    // stimmte, und meldete nichts.
-    $lang = "<html>\n<body>\n" . str_repeat("<p>Ein Absatz mit Text.</p>\n", 300) . "</body>\n</html>";
+test('Eine Aenderungsliste kommt ungekuerzt an', function (): void {
+    // Frueher ging die ganze Seite durch das Formular - bei einer
+    // Kundenwebsite mit eingebetteten Bildern schnell ueber jede
+    // post_max_size, und dann war $_POST leer und die Meldung nannte
+    // eine Grenze, die gar nicht gegriffen hatte.
+    //
+    // Eine Liste von Aenderungen ist ein Bruchteil davon. Sie geht
+    // trotzdem ueber roh() und nicht ueber input(): Das schneidet bei
+    // 2000 Zeichen ab und wirft jeden Zeilenumbruch weg.
+    $quelle = (string) file_get_contents(
+        dirname(__DIR__) . '/public_html/app/Http/DirektController.php'
+    );
 
-    ok(strlen($lang) > 5000, 'Die Probeseite ist gross genug (' . strlen($lang) . ' Bytes)');
-
-    $anfrage = new \WebAtze\Core\Request([], ['inhalt' => $lang], [], [], []);
-
-    // So war es, und so darf es nicht bleiben.
-    ok(strlen($anfrage->input('inhalt')) < strlen($lang), 'input() kuerzt - deshalb taugt es hier nicht');
-    ok(!str_contains($anfrage->input('inhalt'), "\n"), 'Und wirft die Zeilenumbrueche weg');
-
-    // Und so ist es jetzt.
-    is($lang, $anfrage->roh('inhalt', 1024 * 1024), 'roh() gibt die Seite Zeichen fuer Zeichen zurueck');
-    ok(str_contains($anfrage->roh('inhalt', 1024 * 1024), "\n"), 'Die Zeilenumbrueche bleiben');
-
-    // Zu gross gibt leer und nicht abgeschnitten: Ein halb gespeicherter
-    // Kundenauftritt waere schlimmer als ein nicht gespeicherter.
-    is('', $anfrage->roh('inhalt', 100), 'Zu gross gibt leer statt einer halben Seite');
-
-    // Und das Speichern benutzt wirklich diesen Weg.
-    $quelle = (string) file_get_contents(dirname(__DIR__) . '/public_html/app/Http/DirektController.php');
-
-    ok(str_contains($quelle, "\$request->roh('inhalt'"), 'Der Speicherweg liest ungefiltert');
-    ok(!str_contains($quelle, "\$request->input('inhalt'"), 'Und nicht mehr gefiltert');
-
-    // Zeilenenden bleiben, wie die Datei sie hatte - sonst gilt beim
-    // naechsten Vergleich jede Zeile als geaendert.
-    ok(str_contains($quelle, 'zeilenendenAngleichen'), 'Die Zeilenenden werden angeglichen');
+    ok(str_contains($quelle, "roh('aenderungen'"),
+        'Der Speicherweg liest ungefiltert');
+    ok(!preg_match("~input\('aenderungen'~", $quelle),
+        'Und nicht ueber input(), das kuerzen wuerde');
 });
 
 // ==================================================================

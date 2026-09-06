@@ -432,3 +432,124 @@
 @media (prefers-reduced-motion: reduce) {
   .wa-direkt { transition: none; }
 }
+
+/* -------------------------------------------------- Reiter im Blatt
+
+   Inhalt, Stil, Erweitert - die Ordnung, die jeder kennt, der schon
+   einmal eine Seite gebaut hat. Der dritte ist der Punkt: Abstände
+   sind der häufigste Weg, eine fremde Website zu verunstalten, und der
+   seltenste Grund, eine anzufassen. */
+
+.wad-reiter {
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.35rem 0.5rem 0;
+  border-block-end: 1px solid var(--wad-rand);
+}
+
+.wad-reiter__knopf {
+  flex: 1;
+  border: 0;
+  border-block-end: 2px solid transparent;
+  background: transparent;
+  color: var(--wad-leise);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.45rem 0.3rem;
+  cursor: pointer;
+}
+
+.wad-reiter__knopf:hover { color: var(--wad-text); }
+
+.wad-reiter__knopf.ist-an {
+  color: var(--wad-text);
+  border-block-end-color: var(--wad-gut);
+  font-weight: 600;
+}
+
+/* -------------------------------------------------- Knopfreihen */
+
+.wad-knopfreihe { display: flex; gap: 0.15rem; }
+
+.wad-knopfreihe__knopf {
+  flex: 1;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid var(--wad-rand);
+  background: transparent;
+  color: var(--wad-leise);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.wad-knopfreihe__knopf:first-child { border-start-start-radius: 0.4rem; border-end-start-radius: 0.4rem; }
+.wad-knopfreihe__knopf:last-child { border-start-end-radius: 0.4rem; border-end-end-radius: 0.4rem; }
+.wad-knopfreihe__knopf:hover { background: rgb(255 255 255 / 0.07); color: var(--wad-text); }
+
+.wad-knopfreihe__knopf.ist-an {
+  background: color-mix(in srgb, var(--wad-akzent) 26%, transparent);
+  border-color: var(--wad-akzent);
+  color: var(--wad-text);
+}
+
+/* -------------------------------------------------- Regler */
+
+.wad-regler { flex: 1; min-inline-size: 0; accent-color: var(--wad-gut); }
+
+.wad-regler__wert {
+  font-size: 0.75rem;
+  color: var(--wad-leise);
+  min-inline-size: 2.8rem;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.wad-hinweis, .wad-leer {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--wad-leise);
+  line-height: 1.5;
+}
+
+/* -------------------------------------------------- Der Lautsprecher
+
+   Fehler standen bisher in derselben 0.8-rem-Pille wie der Zustand.
+   Eine Absage von hundertfünfzig Zeichen ging dort unter - und wer sie
+   nicht sieht, berichtet "es passiert nichts", obwohl der Server genau
+   gesagt hat, was los war. */
+
+.wad-lautsprecher {
+  position: absolute;
+  inset-block-end: 1rem;
+  inset-inline: 1rem;
+  z-index: 55;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 0.5rem;
+  background: #3a1620;
+  border: 1px solid var(--wad-schlecht);
+  color: #ffe4e4;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  box-shadow: 0 10px 34px rgb(0 0 0 / 0.45);
+}
+
+.wad-lautsprecher--warnung {
+  background: #3a2f14;
+  border-color: var(--wad-offen);
+  color: #ffeecc;
+}
+
+.wad-lautsprecher span { flex: 1; }
+
+.wad-lautsprecher__zu {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}

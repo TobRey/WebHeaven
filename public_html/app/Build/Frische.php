@@ -104,7 +104,7 @@ final class Frische
             return true;
         }
 
-        return @file_put_contents($datei, $neu, LOCK_EX) !== false;
+        return self::sicherSchreiben($datei, $neu);
     }
 
     /**
@@ -133,7 +133,7 @@ final class Frische
             $anzahl = 0;
             $neu = self::stempelnIn($inhalt, dirname($datei), $ordner, $anzahl);
 
-            if ($anzahl > 0 && $neu !== $inhalt && @file_put_contents($datei, $neu, LOCK_EX) !== false) {
+            if ($anzahl > 0 && $neu !== $inhalt && self::sicherSchreiben($datei, $neu)) {
                 $seiten++;
                 $verweise += $anzahl;
             }
@@ -158,7 +158,7 @@ final class Frische
     {
         $muster = '~(<(?:link|script)\b[^>]*?\b(?:href|src)=")([^"]+\.(?:css|js))((?:\?[^"]*)?)(")~i';
 
-        return (string) preg_replace_callback($muster, static function (array $t) use ($basis, $wurzel, &$anzahl): string {
+        $neu = preg_replace_callback($muster, static function (array $t) use ($basis, $wurzel, &$anzahl): string {
             $pfad = $t[2];
 
             // Fremde Server und protokollrelative Adressen bleiben, wie
@@ -193,6 +193,32 @@ final class Frische
 
             return $t[1] . $pfad . '?v=' . $stempel . ($rest === '' ? '' : '&' . $rest) . $t[4];
         }, $html);
+
+        // NULL ist kein leerer Text.
+        //
+        // `preg_replace_callback` gibt bei einem PCRE-Limit NULL zurück.
+        // Hier stand `(string) preg_replace_callback(...)` - und das
+        // macht daraus eine leere Zeichenkette. Die Wächter eine Ebene
+        // höher hätten sie durchgelassen: `$anzahl` ist per Referenz
+        // schon hochgezählt, und '' ist ungleich dem Original. Am Ende
+        // stünde `file_put_contents($datei, '')` da: die Seite des
+        // Kunden, auf null Bytes.
+        //
+        // Ob PCRE in diesem Muster je abbricht, weiss ich nicht - aber
+        // ein Weg, auf dem eine fremde Datei stillschweigend geleert
+        // wird, darf nicht davon abhängen.
+        if ($neu === null) {
+            \WebAtze\Core\Logger::warning('Verweise liessen sich nicht stempeln - Datei bleibt, wie sie ist.', [
+                'grund' => preg_last_error_msg(),
+                'bytes' => strlen($html),
+            ]);
+
+            $anzahl = 0;
+
+            return $html;
+        }
+
+        return $neu;
     }
 
     /** Die Abfrage ohne unser eigenes `v` – der Rest bleibt erhalten. */
@@ -210,6 +236,32 @@ final class Frische
         );
 
         return implode('&', $teile);
+    }
+
+    /**
+     * Schreiben - und nachsehen, ob alles ankam.
+     *
+     * `file_put_contents` gibt bei vollem Kontingent **die Anzahl
+     * geschriebener Bytes** zurück, nicht `false`. Eine Prüfung auf
+     * `=== false` hält das für Erfolg, und die Datei ist mitten im
+     * HTML abgeschnitten. Auf geteiltem Hosting mit Kontingent ist das
+     * kein Sonderfall, sondern eine Frage der Zeit.
+     */
+    private static function sicherSchreiben(string $datei, string $inhalt): bool
+    {
+        $geschrieben = @file_put_contents($datei, $inhalt, LOCK_EX);
+
+        if ($geschrieben === strlen($inhalt)) {
+            return true;
+        }
+
+        \WebAtze\Core\Logger::warning('Datei unvollständig geschrieben.', [
+            'datei' => basename($datei),
+            'erwartet' => strlen($inhalt),
+            'geschrieben' => $geschrieben === false ? 'nichts' : $geschrieben,
+        ]);
+
+        return false;
     }
 
     /** @return list<string> Alle HTML-Dateien unterhalb des Ordners. */
